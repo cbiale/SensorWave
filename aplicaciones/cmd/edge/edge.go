@@ -1,14 +1,18 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"os/signal"
+
 	MQTT "github.com/eclipse/paho.mqtt.golang"
+	"go.uber.org/zap"
 )
 
 // app de ejemplo
 func main() {
+	logger := zap.Must(zap.NewProduction())
+	defer logger.Sync()
+	
 	// opciones a pasar al cliente MQTT
 	opciones := MQTT.NewClientOptions().AddBroker("tcp://localhost:1883")
 	opciones.SetClientID("SensorWaveMQTT")
@@ -16,13 +20,18 @@ func main() {
 	// crea un cliente MQTT
 	cliente := MQTT.NewClient(opciones)
 	if token := cliente.Connect(); token.Wait() && token.Error() != nil {
-		panic(token.Error())
+		logger.Error(token.Error().Error())
+		os.Exit(1)
 	}
-	fmt.Println("Conectado al broker MQTT")
+
+	logger.Info("Conectado al broker MQTT")
 
 	// función que maneja los mensajes entrantes
 	manejador := func(cliente MQTT.Client, mensaje MQTT.Message) {
-		fmt.Printf("Mensaje recibido: %s de %s\n", mensaje.Payload(), mensaje.Topic())
+		logger.Info("Mensaje recibido",
+			zap.String("topico", mensaje.Topic()),
+			zap.ByteString("mensaje", mensaje.Payload()),
+		)
 	}
 
 	// se suscribe a todos los mensajes con tópicos que comiencen con "datos/"
@@ -36,7 +45,7 @@ func main() {
 	<-c
 
 	// se desconecta del broker MQTT
-	fmt.Println("Desconectadose del broker MQTT")
+	logger.Info("Desconectadose del broker MQTT")
 	cliente.Disconnect(1000)
 
 }

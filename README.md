@@ -39,10 +39,10 @@ Formatos de archivos:
 
 - Apache Parquet
 - Apache TsFile
-- Zap
 
 Otros:
 
 - FlatBuffers
 - Mo - Monads
 - Thanos
+- Zap

@@ -28,7 +28,7 @@ En el sistema propuesto, las aplicaciones desplegadas al borde de la red pueden 
 
 Lenguajes de programación:
 
-- Golang o Rust
+- Golang o Rust o C++
 
 Bases de Datos:
 

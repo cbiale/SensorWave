@@ -12,9 +12,9 @@ func manejador(w http.ResponseWriter, r *http.Request) {
 
 func main() {
     http.HandleFunc("/", manejador)
-    port := "9000"
-    fmt.Printf("Iniciando servidor en puerto %s\n", port)
-    if err := http.ListenAndServe(":"+port, nil); err != nil {
+    puerto := "9000"
+    fmt.Printf("Iniciando servidor en puerto %s\n", puerto)
+    if err := http.ListenAndServe(":"+puerto, nil); err != nil {
         log.Fatalf("No se ha podido iniciar el servidor: %s\n", err)
     }
 }

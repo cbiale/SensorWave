@@ -18,25 +18,21 @@ func main() {
 	}
 	fmt.Println("Conectado al broker MQTT")
 
-	// el sistema debe suscribirse al topic datos/# y cuando llegan datos
-	// almacenarlos en una base de datos sqlite
-
-	// Callback function to handle incoming messages
+	// función que maneja los mensajes entrantes
 	manejador := func(cliente MQTT.Client, mensaje MQTT.Message) {
 		// Store the received data in a SQLite database
 		// ...
 	}
 
-	// define la funcion manejador al llegar mensajes
-	cliente.SetDefaultPublishHandler(manejador)
+	// define la función que maneja los mensajes entrantes
+	cliente.AddRoute("datos/#", manejador)
 
-	// como hacer para que no termine el programa
-	// hasta que presione ctrl-c
+	// termina el programa al presionar ctrl-C
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
 	<-c
 
 	fmt.Println("Desconectadose del broker MQTT")
-	cliente.Disconnect()
+	cliente.Disconnect(1000)
 
 }

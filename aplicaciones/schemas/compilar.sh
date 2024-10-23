@@ -1,1 +1,1 @@
-flatc --go -o ../gen payload.fbs
+flatc --go -o ../gen --gen-onefile --go-namespace payload payload.fbs

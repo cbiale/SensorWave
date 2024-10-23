@@ -5,8 +5,11 @@
 - A Comprehensive Guide to Zap Logging in Go: https://betterstack.com/community/guides/logging/go/zap/
 - SQL Has Problems. We Can Fix Them: Pipe Syntax In SQL: https://research.google/pubs/sql-has-problems-we-can-fix-them-pipe-syntax-in-sql/
 - Big Data is Dead: https://motherduck.com/blog/big-data-is-dead/
+- Understanding Apache Arrow Flight: https://www.dremio.com/blog/understanding-apache-arrow-flight/
+- Faster reading from the Lakehouse to Python with DuckDB/ArrowFlight: https://www.hopsworks.ai/post/python-centric-feature-service-with-arrowflight-and-duckdb (Ejemplo de uso de DuckDB y ArrowFlight)
 - SlateDB: An Embedded Storage Engine Built on Object Storage: https://materializedview.io/p/slatedb-an-embedded-storage-engine
 - Test de concurrencia entre DuckDB y Sqlite: https://github.com/breckcs/duckdb_sqlite_scanner_concurrency_tests
+- Mochi-Mqtt: https://github.com/mochi-mqtt/server
 
 ## Aplicaciones de referencia
 

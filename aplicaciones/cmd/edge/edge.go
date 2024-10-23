@@ -32,6 +32,12 @@ func main() {
 			zap.String("topico", mensaje.Topic()),
 			zap.ByteString("mensaje", mensaje.Payload()),
 		)
+		// el payload viene en formato FlatBuffers
+		// se puede deserializar con el esquema generado
+		// por flatc ubicado en el archivo payload_generated.go
+		
+		payload := mensaje.Payload()
+		// deserializa el payload
 		
 	}
 

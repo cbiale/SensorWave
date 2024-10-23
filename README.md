@@ -47,6 +47,6 @@ Otros:
 - Apache DataFusion (Manejo de consultas)
 - Apache Iceberg (Datos y modelos)
 - FlatBuffers (Esto o Arrow Flight)
-- Mo - Monads (USo de monads en Golang)
+- Mo - Monads (Uso de monads en Golang)
 - Thanos (Comunicación con Minio)
 - Zap (Logger)

@@ -1,0 +1,27 @@
+// payload recibido
+
+table Payload {
+  id: string;
+  valores: [ClaveValor];
+  timestamp: string; // Optional timestamp as string
+}
+
+// campo clave valor
+// clave: es el tipo de sensor
+// valor: el valor del sensor
+table ClaveValor {
+  clave: string;
+  valor: Valor;
+}
+
+union Valor { ValorFloat, ValorBool }
+
+table ValorFloat {
+  valor: float;
+}
+
+table ValorBool {
+  valor: bool;
+}
+
+root_type Payload;

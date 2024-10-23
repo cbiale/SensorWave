@@ -32,6 +32,7 @@ func main() {
 			zap.String("topico", mensaje.Topic()),
 			zap.ByteString("mensaje", mensaje.Payload()),
 		)
+		
 	}
 
 	// se suscribe a todos los mensajes con tópicos que comiencen con "datos/"

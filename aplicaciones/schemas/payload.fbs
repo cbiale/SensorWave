@@ -1,10 +1,14 @@
 // payload recibido
 
-table Payload {
-  id: string;
-  valores: [ClaveValor];
-  timestamp: string; // Optional timestamp as string
+table ValorFloat {
+  valor: float;
 }
+
+table ValorBool {
+  valor: bool;
+}
+
+union Valor { ValorFloat, ValorBool }
 
 // campo clave valor
 // clave: es el tipo de sensor
@@ -14,14 +18,14 @@ table ClaveValor {
   valor: Valor;
 }
 
-union Valor { ValorFloat, ValorBool }
-
-table ValorFloat {
-  valor: float;
-}
-
-table ValorBool {
-  valor: bool;
+// Epoch timestamp en milisegundos
+// id: UUID de nodo representado como un array de 16 bytes 
+// valores: arreglo de tipo clave valor con tipo : valor
+// timestamp: epoch timestamp en milisegundos
+table Payload {
+  id: [ubyte];
+  valores: [ClaveValor];
+  timestamp: int64; 
 }
 
 root_type Payload;

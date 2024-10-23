@@ -1,0 +1,1 @@
+flatc --go -o ../gen payload.fbs

@@ -10,6 +10,12 @@
 - SlateDB: An Embedded Storage Engine Built on Object Storage: https://materializedview.io/p/slatedb-an-embedded-storage-engine
 - Test de concurrencia entre DuckDB y Sqlite: https://github.com/breckcs/duckdb_sqlite_scanner_concurrency_tests
 - Mochi-Mqtt: https://github.com/mochi-mqtt/server
+- Hash tables in ClickHouse and C++ Zero-cost Abstractions: https://clickhouse.com/blog/hash-tables-in-clickhouse-and-zero-cost-abstractions
+- Time-series and analytical databases walk into a bar: https://questdb.io/blog/2024/10/28/time-series-analytic-database-p99-andrei/
+- Go I/O Closer, Seeker, WriterTo, and ReaderFrom
+: https://victoriametrics.com/blog/go-io-closer-seeker-readfrom-writeto/ (Tiene lecturas sobre go)
+- Parquet pruning in DataFusion
+: https://blog.haoxp.xyz/posts/parquet-to-arrow/
 
 ## Aplicaciones de referencia
 

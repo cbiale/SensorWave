@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/signal"
+	"database/sql"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 	"go.uber.org/zap"
@@ -36,9 +37,19 @@ func main() {
 		// se puede deserializar con el esquema generado
 		// por flatc ubicado en el archivo payload_generated.go
 		
-		payload := mensaje.Payload()
-		// deserializa el payload
 		
+		// deserializa el payload
+		// maneja la base de datos Sqlite
+		// almacena los datos
+		
+		// crea la base de datos
+		datos, err := sql.Open("sqlite3", "./sensores.db")
+		if err != nil {
+			logger.Fatal(err.Error())
+		}
+		defer datos.Close() 
+		// inserta los datos (usar canales, tener un hilo que inserte los datos)
+
 	}
 
 	// se suscribe a todos los mensajes con tópicos que comiencen con "datos/"

@@ -16,6 +16,7 @@
 : https://victoriametrics.com/blog/go-io-closer-seeker-readfrom-writeto/ (Tiene lecturas sobre go)
 - Parquet pruning in DataFusion
 : https://blog.haoxp.xyz/posts/parquet-to-arrow/
+- Capacidades funcionales en Go: https://www.bytesizego.com/blog/10-years-functional-options-golang
 
 ## Aplicaciones de referencia
 

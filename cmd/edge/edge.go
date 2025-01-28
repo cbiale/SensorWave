@@ -1,14 +1,12 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"os/signal"
-	"time"
 
 	MQTT "github.com/eclipse/paho.mqtt.golang"
 	"go.uber.org/zap"
-	"github.com/cbiale/sensorwave"
+	"github.com/cbiale/sensorwave/sensorwave"
 )
 
 // app de ejemplo
@@ -32,9 +30,37 @@ func main() {
 	// inicializa sensorwave
 	logger.Info("Inicializando SensorWave")
 
-	db, err := sensorwave.Init("sensorwave.db")
+	db, err := sensorwave.Init("midb.db", "localhost:9000", "miniominio", "miniominio", "gzip", 1000, 40)
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+
+	logger.Info("SensorWave inicializado")
+
+	db.RegisterSensor("Temperatura ambiente", "°C")
+	db.RegisterSensor("Humedad ambiente", "%")
+	db.RegisterSensor("Nivel de alimento", "%")
+	db.RegisterSensor("Nivel de agua", "%")
+
+	sensors, err := db.GetSensors()
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+	logger.Info("Sensores registrados", zap.Any("sensores", sensors))
 
 
+	db.RegisterActuator("Ventilador", []string{"Encender", "Apagar"})
+	db.RegisterActuator("Bomba de agua", []string{"Encender", "Apagar"})
+
+	actuators, err := db.GetActuators()
+
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+	logger.Info("Actuadores registrados", zap.Any("actuadores", actuators))
 
 	// función que maneja los mensajes entrantes
 	manejador := func(cliente MQTT.Client, mensaje MQTT.Message) {
@@ -42,8 +68,6 @@ func main() {
 			zap.String("topico", mensaje.Topic()),
 			zap.ByteString("mensaje", mensaje.Payload()),
 		)
-
-
 	}
 
 	// se suscribe a todos los mensajes con tópicos que comiencen con "datos/"
@@ -60,5 +84,6 @@ func main() {
 	// se desconecta del broker MQTT
 	logger.Info("Desconectadose del broker MQTT")
 	cliente.Disconnect(1000)
-
+	// cierra sensorwave
+	db.Close()
 }

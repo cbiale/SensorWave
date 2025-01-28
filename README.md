@@ -28,25 +28,20 @@ En el sistema propuesto, las aplicaciones desplegadas al borde de la red pueden 
 
 Lenguajes de programación:
 
-- Golang o Rust o C++
+- Golang
 
 Bases de Datos:
 
 - DuckDb (Almacenamiento de datos para consultas)
 - Sqlite (Almacenamiento de datos al borde)
-- Minio (Almacenamiento de datos en la nube, alternativa Garage)
+- Minio (Almacenamiento de datos en la nube)
 
 Formatos de archivos:
 
 - Apache Parquet (Formato de archivo usado en Minio)
-- Apache TsFile (Formato de archivo usado en Minio, se debe analizar si usar con Java o C++)
 
 Otros:
 
-- Apache Arrow (Almacenamiento de datos en memoria y uso de Arrow Flight)
-- Apache DataFusion (Manejo de consultas)
-- Apache Iceberg (Datos y modelos)
-- FlatBuffers (Esto o Arrow Flight)
-- Mo - Monads (Uso de monads en Golang)
-- Thanos (Comunicación con Minio)
 - Zap (Logger)
+- paho.mqtt.golang (Protocolo MQTT)
+- Se usan bibliotecas para el acceso a las bases de datos

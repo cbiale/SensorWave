@@ -1,0 +1,54 @@
+package servidor
+
+import "encoding/json"
+
+
+func enviarCoAP(LOG string, payload Mensaje) {
+	// publica el mensaje en el tópico
+	loggerPrint(LOG, ">> Publicando mensaje en el tópico HTTP " + payload.Topico)
+
+	// notifico a todos los observadores
+	mutexCoAP.Lock()
+	for _, o := range observadores[payload.Topico] {
+		enviarRespuesta(o.conexion, o.token, payload, valor.Add(1))
+	}
+	mutexCoAP.Unlock()
+}
+
+func enviarHTTP (LOG string, payload Mensaje) {
+	// publica el mensaje en el tópico
+	loggerPrint(LOG, ">> Publicando mensaje en el tópico HTTP " + payload.Topico)
+
+	// no se serializa el mensaje a JSON
+	// Publicar un mensaje en el tópico
+    // Enviar el mensaje a todos los clientes suscritos al tópico
+    mutexHTTP.Lock()
+    if clientes, exists := clientesPorTopico[payload.Topico]; exists {
+        for cliente := range clientes {
+            select {
+            case cliente.Channel <- string(payload.Payload):
+                loggerPrint(LOG, "Mensaje enviado al tópico " + payload.Topico)
+            default:
+                loggerPrint(LOG, "No se pudo enviar el mensaje al cliente en el tópico " + payload.Topico + " (canal bloqueado)")
+            }
+        }
+    } else {
+        loggerPrint(LOG, "No hay clientes suscritos al tópico " + payload.Topico)
+    }
+    mutexHTTP.Unlock()	
+}
+
+func enviarMQTT (LOG string, payload Mensaje) {
+	// publica el mensaje en el tópico
+	loggerPrint(LOG, ">> Publicando mensaje en el tópico MQTT " + payload.Topico)
+	
+	// Serializar el mensaje a JSON
+	mensajeBytes, err := json.Marshal(payload)
+	if err != nil {
+		loggerPrint(LOG, "Error al serializar el mensaje: %v", err)
+	}
+	// Publicar un mensaje en el tópico
+	if token := clienteMQTT.Publish(payload.Topico, 0, false, mensajeBytes); token.Wait() && token.Error() != nil {
+		loggerPrint(LOG, "Error: %v", token.Error())
+	}		
+}

@@ -62,6 +62,20 @@ func main() {
 	}
 	logger.Info("Actuadores registrados", zap.Any("actuadores", actuators))
 
+	db.RegisterNode("Nodo 1", map[string]string{
+		"ubicacion":  "gallinero pollitos",
+		"tipo":       "esp32",
+	})
+
+	nodes, err := db.GetNodes()
+
+	if err != nil {
+		logger.Error(err.Error())
+		os.Exit(1)
+	}
+	logger.Info("Nodos registrados", zap.Any("nodos", nodes))
+
+
 	// función que maneja los mensajes entrantes
 	manejador := func(cliente MQTT.Client, mensaje MQTT.Message) {
 		logger.Info("Mensaje recibido",

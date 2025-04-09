@@ -46,30 +46,12 @@ def procesar_csvs(directorio):
     df_middleware = pd.DataFrame(resumen_middleware)
     df_solo = pd.DataFrame(resumen_solo)
 
-    # Calcular overhead para combinaciones homogéneas
-    overhead = []
-    for _, row in df_middleware.iterrows():
-        if row["Publicador"] == row["Suscriptor"]:
-            proto = row["Publicador"]
-            lat_solo = df_solo[df_solo["Protocolo"] == proto]["Latencia Promedio (ms)"].values
-            if lat_solo.size > 0:
-                overhead.append({
-                    "Protocolo": proto,
-                    "Latencia Sin Middleware (ms)": lat_solo[0],
-                    "Latencia Con Middleware (ms)": row["Latencia Promedio (ms)"],
-                    "Overhead Introducido (ms)": round(row["Latencia Promedio (ms)"] - lat_solo[0], 2)
-                })
-
-    df_overhead = pd.DataFrame(overhead)
-
     # Guardar como CSV
     df_middleware.to_csv(os.path.join(directorio, "resumen_middleware.csv"), index=False)
     df_solo.to_csv(os.path.join(directorio, "resumen_solo.csv"), index=False)
-    df_overhead.to_csv(os.path.join(directorio, "resumen_overhead.csv"), index=False)
 
-    print("\n🧩 Resultados con Middleware guardados en resumen_middleware.csv")
-    print("\n🚀 Resultados sin Middleware guardados en resumen_solo.csv")
-    print("\n📊 Overhead guardado en resumen_overhead.csv")
+    print("\nResultados con Middleware guardados en resumen_middleware.csv")
+    print("\nResultados sin Middleware guardados en resumen_solo.csv")
 
 if __name__ == "__main__":
     directorio_datos = "."

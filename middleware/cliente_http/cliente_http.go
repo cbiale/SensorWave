@@ -9,21 +9,14 @@ import (
 	"log"
 	"net/http"
 	"strings"
+
+    "github.com/cbiale/sensorwave/middleware"
 )
 
 // ClienteHTTP representa un cliente HTTP
 type ClienteHTTP struct {
     BaseURL string
     Cliente  *http.Client
-}
-
-type CallbackFunc func(topico string, payload interface{})
-
-// almacena si el mensaje es original o replica
-type Mensaje struct {
-    Original bool `json:"original"`
-    Topico   string `json:"topico"`
-    Payload  []byte `json:"payload"`
 }
 
 var ruta string = "/sensorwave"
@@ -56,7 +49,7 @@ func (c *ClienteHTTP) Publicar(topico string, payload interface{}) {
         }
     }
 
-	mensaje := Mensaje{Original: true, Topico: topico, Payload: data}
+	mensaje := middleware.Mensaje{Original: true, Topico: topico, Payload: data, Interno: false}
 
 	// Serializar el mensaje a JSON
 	mensajeBytes, err := json.Marshal(mensaje)
@@ -80,7 +73,7 @@ func (c *ClienteHTTP) Publicar(topico string, payload interface{}) {
 }
 
 // Suscribir realiza un GET al servidor HTTP
-func (c *ClienteHTTP) Suscribir(topico string, callback CallbackFunc) {
+func (c *ClienteHTTP) Suscribir(topico string, callback middleware.CallbackFunc) {
     // Realizar la solicitud GET
     go func() {
         url := fmt.Sprintf("%s%s?topico=%s", c.BaseURL, ruta, topico)
@@ -97,7 +90,7 @@ func (c *ClienteHTTP) Suscribir(topico string, callback CallbackFunc) {
 
         // Leer el flujo SSE y llamar al callback con los datos 
         for {
-            line, err := reader.ReadString('\n')
+            linea, err := reader.ReadString('\n')
             if err != nil {
                 if err == io.EOF {
                     log.Println("Conexión SSE cerrada por el servidor")
@@ -107,15 +100,37 @@ func (c *ClienteHTTP) Suscribir(topico string, callback CallbackFunc) {
             }
 
             // Procesar solo líneas que comiencen con "data: "
-            if strings.HasPrefix(line, "data: ") {
-                data := strings.TrimPrefix(line, "data: ")
-                data = strings.TrimSpace(data) // Eliminar espacios en blanco
+            if strings.HasPrefix(linea, "data: ") {
+                datos := strings.TrimPrefix(linea, "data: ")
+                datos = strings.TrimSpace(datos) // Eliminar espacios en blanco
                 // Delegar la lectura del flujo SSE al callback
-                callback(topico, data)
+                callback(topico, datos)
             }
         }
     }()
 }
+
+func (c *ClienteHTTP) Desuscribir(topico string) {
+
+    // enviar un Delete
+    url := fmt.Sprintf("%s%s?topico=%s", c.BaseURL, ruta, topico)
+    req, err := http.NewRequest("DELETE", url, nil)
+    if err != nil {
+        log.Fatalf("Error al crear la solicitud DELETE: %v", err)
+    }
+    resp, err := c.Cliente.Do(req)
+    if err != nil {
+        log.Fatalf("Error al realizar la solicitud DELETE: %v", err)
+    }
+    defer resp.Body.Close()
+    // Verificar el código de respuesta
+    if resp.StatusCode != http.StatusOK {
+        body, _ := io.ReadAll(resp.Body)
+        log.Fatalf("Error en la respuesta del servidor: %s", string(body))
+    }
+    fmt.Println("Desuscrito del tópico:", topico)
+}
+
 
 // Desconectar cierra las conexiones del cliente HTTP
 func (c *ClienteHTTP) Desconectar () {

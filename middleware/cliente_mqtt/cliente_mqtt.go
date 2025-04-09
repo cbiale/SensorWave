@@ -5,22 +5,14 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/cbiale/sensorwave/middleware"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/google/uuid"
 )
 
 type ClienteMQTT struct {
     cliente mqtt.Client
 }
-
-type CallbackFunc func(topico string, payload interface{})
-
-// almacena si el mensaje es original o replica
-type Mensaje struct {
-    Original bool `json:"original"`
-    Topico   string `json:"topico"`
-    Payload  []byte `json:"payload"`
-}
-
 
 // conectar cliente
 func Conectar(direccion string, puerto string) *ClienteMQTT {
@@ -28,7 +20,7 @@ func Conectar(direccion string, puerto string) *ClienteMQTT {
 	servidor := "tcp://" + direccion + ":" + puerto
     opts := mqtt.NewClientOptions()
     opts.AddBroker(servidor)
-    opts.SetClientID("sensorwave_cliente")
+    opts.SetClientID("sensorwave_" + uuid.New().String())
 
     // Crear el cliente MQTT
     cliente := mqtt.NewClient(opts)
@@ -65,7 +57,7 @@ func (c *ClienteMQTT) Publicar(topico string, payload interface{}) {
         }
     }
 
-	mensaje := Mensaje{Original: true, Topico: topico, Payload: data}
+	mensaje := middleware.Mensaje{Original: true, Topico: topico, Payload: data, Interno: false}
 
 	// Serializar el mensaje a JSON
 	mensajeBytes, err := json.Marshal(mensaje)
@@ -81,11 +73,11 @@ func (c *ClienteMQTT) Publicar(topico string, payload interface{}) {
 
 
 // suscribir a tópico
-func (c *ClienteMQTT) Suscribir(topico string, callback CallbackFunc) { 
+func (c *ClienteMQTT) Suscribir(topico string, callback middleware.CallbackFunc) { 
 	// Suscribirse a un tópico
     internalCallback := func(client mqtt.Client, msg mqtt.Message) {
 
-        var mensaje Mensaje
+        var mensaje middleware.Mensaje
         err := json.Unmarshal(msg.Payload(), &mensaje)
         if err != nil {
             log.Fatalf("Error al procesar el cuerpo de la solicitud: "+ err.Error())
@@ -93,6 +85,7 @@ func (c *ClienteMQTT) Suscribir(topico string, callback CallbackFunc) {
         }
         callback(msg.Topic(), string(mensaje.Payload))
     }
+
     if token := c.cliente.Subscribe(topico, 0, internalCallback); token.Wait() && token.Error() != nil {
         log.Fatalf("Error: %v",token.Error())
     }

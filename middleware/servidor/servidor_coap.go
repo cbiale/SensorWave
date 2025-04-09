@@ -100,7 +100,7 @@ func manejarSuscripcionCoAP (w mux.ResponseWriter, r *mux.Message, topico string
 	mutexCoAP.Unlock()
 
 	// enviar respuesta
-	err :=  enviarRespuesta(w.Conn(), r.Token(), Mensaje{}, valor.Add(1))
+	err :=  enviarRespuesta(w.Conn(), r.Token(), Mensaje{Interno: true}, valor.Add(1))
 	if err != nil {
 		loggerPrint(LOG_COAP, "Error en transmitir: %v", err)
 	}
@@ -127,7 +127,7 @@ func manejarPublicacionCoAP (w mux.ResponseWriter, r *mux.Message, ruta string, 
 }
 
 func eliminarSuscripcionCoAP (w mux.ResponseWriter, r *mux.Message, ruta string) {
-	err := enviarRespuesta(w.Conn(), r.Token(), Mensaje{}, -1)
+	err := enviarRespuesta(w.Conn(), r.Token(), Mensaje{Interno: true}, -1)
 	if err != nil {
 		loggerPrint(LOG_COAP, "Error al enviar respuesta: %v", err)
 	}

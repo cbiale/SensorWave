@@ -9,6 +9,7 @@ type Mensaje struct {
     Original bool `json:"original"`
     Topico   string `json:"topico"`
     Payload  []byte `json:"payload"`
+	Interno bool `json:"interno"`
 }
 
 // loggerFatal imprime un mensaje en la consola de log y termina

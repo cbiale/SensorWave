@@ -12,6 +12,7 @@ import (
 	"github.com/plgd-dev/go-coap/v3/udp"
 	"github.com/plgd-dev/go-coap/v3/udp/client"
 	obs "github.com/plgd-dev/go-coap/v3/net/client"
+	"github.com/cbiale/sensorwave/middleware"
 )
 
 // tipo del cliente
@@ -19,18 +20,9 @@ type ClienteCoAP struct {
 	cliente *client.Conn
 }
 
-// tipo de función de callback generica de bibliotecas del middleware
-type CallbackFunc func(topico string, payload interface{})
 
 // almacena suscripciones del cliente
 var observaciones = make(map[string]obs.Observation)
-
-// almacena si el mensaje es original o replica
-type Mensaje struct {
-    Original bool `json:"original"`
-    Topico   string `json:"topico"`
-    Payload  []byte `json:"payload"`
-}
 
 // conectar cliente
 func Conectar(direccion string, puerto string) *ClienteCoAP {
@@ -67,7 +59,7 @@ func (c *ClienteCoAP) Publicar(topico string, payload interface{}) {
         }
     }
 
-	mensaje := Mensaje{Original: true, Topico: topico, Payload: data}
+	mensaje := middleware.Mensaje{Original: true, Topico: topico, Payload: data, Interno: false}
 
 	// Serializar el mensaje a JSON
 	mensajeBytes, err := json.Marshal(mensaje)
@@ -85,17 +77,22 @@ func (c *ClienteCoAP) Publicar(topico string, payload interface{}) {
 
 // suscribir a tópico
 // A futuro si ya estoy suscripto, primero desuscribir y luego suscribir
-func (c *ClienteCoAP) Suscribir(topico string, callback CallbackFunc) { 
+func (c *ClienteCoAP) Suscribir(topico string, callback middleware.CallbackFunc) { 
 	// subscribe al recurso
 	ctx := context.Background()
 	internalCallback := func(msg *pool.Message) {
-        var mensaje Mensaje
+        var mensaje middleware.Mensaje
 		if p, err := msg.ReadBody(); err == nil && len(p) > 0 {
 			err := json.Unmarshal(p, &mensaje)
 			if err != nil {
 				log.Fatalf("Error al procesar el cuerpo de la solicitud: "+ err.Error())
 				return
 			}
+		}
+		// si es un mensaje interno, no lo procesamos
+		if (mensaje.Interno) {
+			log.Printf("Mensaje interno, ignorando")
+			return
 		}
 		callback(topico, string(mensaje.Payload))
 	}
@@ -107,7 +104,7 @@ func (c *ClienteCoAP) Suscribir(topico string, callback CallbackFunc) {
 }
 
 // se desuscribe a un topico
-func (c *ClienteCoAP) desuscribir(topico string) {
+func (c *ClienteCoAP) Desuscribir(topico string) {
 	obs, ok := observaciones[topico]
 	if !ok {
 		log.Printf("No hay observación activa en %s", topico)

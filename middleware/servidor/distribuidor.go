@@ -23,8 +23,8 @@ func enviarHTTP (LOG string, payload Mensaje) {
 	// Publicar un mensaje en el tópico
     // Enviar el mensaje a todos los clientes suscritos al tópico
     mutexHTTP.Lock()
-    if clientes, exists := clientesPorTopico[payload.Topico]; exists {
-        for cliente := range clientes {
+    if clientes, existe := clientesPorTopico[payload.Topico]; existe {
+        for _, cliente := range clientes {
             select {
             case cliente.Channel <- string(payload.Payload):
                 loggerPrint(LOG, "Mensaje enviado al tópico " + payload.Topico)

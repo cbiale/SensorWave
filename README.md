@@ -24,24 +24,10 @@ Un cliente puede realizar consultas locales o globales, donde las consultas loca
 
 En el sistema propuesto, las aplicaciones desplegadas al borde de la red pueden continuar funcionando ante eventuales problemas de conectividad entre el borde y la nube debido a que los nodos al borde disponen de almacenamiento local y un motor de reglas. Las consultas locales no se ven afectadas ante problemas de conectividad, pero si se realiza una consulta global el sistema retorna como parte de la respuesta a qué nodos al borde no pudo acceder.
 
-## Posibles herramientas a utilizar
+## Herramientas a utilizar
 
 Lenguajes de programación:
 
 - Golang
+- C (ESP-IDF)
 
-Bases de Datos:
-
-- DuckDb (Almacenamiento de datos para consultas)
-- Sqlite (Almacenamiento de datos al borde)
-- Minio (Almacenamiento de datos en la nube)
-
-Formatos de archivos:
-
-- Apache Parquet (Formato de archivo usado en Minio)
-
-Otros:
-
-- Zap (Logger)
-- paho.mqtt.golang (Protocolo MQTT)
-- Se usan bibliotecas para el acceso a las bases de datos

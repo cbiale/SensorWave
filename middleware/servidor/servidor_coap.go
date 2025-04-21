@@ -24,7 +24,7 @@ type Conexion struct {
 
 // Almacena observadores por ruta
 var (
-	valor atomic.Int64 						  // valor de observación
+	valor atomic.Int64          	             // valor de observación
 	observadores = make(map[string][]Conexion)   // conexiones CoAP
 	mutexCoAP      sync.Mutex                    // Mutex para proteger el acceso a `clientesPorTopico`
 )
@@ -114,16 +114,13 @@ func manejarPublicacionCoAP (w mux.ResponseWriter, r *mux.Message, ruta string, 
 		loggerPrint(LOG_COAP, "Error al enviar respuesta: %v", err)
 	}		
 
-	// notifico a todos los observadores
-	mutexCoAP.Lock()
-	for _, o := range observadores[ruta] {
-		enviarRespuesta(o.conexion, o.token, payload, valor.Add(1))
+	// enviar publicaciones a los protocolos
+	if payload.Original {
+		payload.Original = false
+		go enviarCoAP(LOG_COAP, payload)
+		go enviarHTTP(LOG_COAP, payload)
+		go enviarMQTT(LOG_COAP, payload)
 	}
-	mutexCoAP.Unlock()
-	// enviar publicaciones a los otros protocolos
-	payload.Original = false
-	enviarHTTP(LOG_COAP, payload)
-	enviarMQTT(LOG_COAP, payload)
 }
 
 func eliminarSuscripcionCoAP (w mux.ResponseWriter, r *mux.Message, ruta string) {
@@ -131,6 +128,19 @@ func eliminarSuscripcionCoAP (w mux.ResponseWriter, r *mux.Message, ruta string)
 	if err != nil {
 		loggerPrint(LOG_COAP, "Error al enviar respuesta: %v", err)
 	}
+	// quito el observador
+	mutexCoAP.Lock()
+	for i, o := range observadores[ruta] {
+		if bytes.Equal(o.token, r.Token()) {
+			observadores[ruta] = append(observadores[ruta][:i], observadores[ruta][i+1:]...)
+			break
+		}
+	}
+	// Si no hay más observadores en la ruta, eliminar la ruta
+	if len(observadores[ruta]) == 0 {
+		delete(observadores, ruta)
+	}
+	mutexCoAP.Unlock()
 }
 
 func enviarRespuesta(cc mux.Conn, token []byte, mensaje Mensaje, obs int64) error {

@@ -13,8 +13,8 @@ type Cliente struct {
 
 // Clientes por topico (revisar el formato de unidad)
 var (
-    clientesPorTopico = make(map[string]map[*Cliente]bool) // Mapa de clientes agrupados por tópico
-    mutexHTTP           sync.Mutex                         // Mutex para proteger el acceso a `clientesPorTopico`
+    clientesPorTopico = make(map[string][]*Cliente) // Mapa de clientes agrupados por tópico
+    mutexHTTP           sync.Mutex                  // Mutex para proteger el acceso a `clientesPorTopico`
 )
 
 
@@ -40,6 +40,9 @@ func manejadorHTTP(w http.ResponseWriter, r *http.Request) {
     if r.Method == http.MethodPost {
         manejarPublicacionHTTP (w, r)
     }
+    if r.Method == http.MethodDelete {
+        manejarDesuscripcionHTTP (w, r)
+    }
 }
 
 // Manejar conexiones SSE (ver de no pasar por URL)
@@ -59,11 +62,9 @@ func manejarSuscripcionHTTP (w http.ResponseWriter, r *http.Request) {
     // Crear un cliente y agregarlo al mapa de clientes por tópico
     cliente := &Cliente{Channel: make(chan string)}
     mutexHTTP.Lock()
-    if _, exists := clientesPorTopico[topico]; !exists {
-        clientesPorTopico[topico] = make(map[*Cliente]bool)
-    }
-    clientesPorTopico[topico][cliente] = true
+	clientesPorTopico[topico] = append(clientesPorTopico[topico], cliente)
     mutexHTTP.Unlock()
+    
 
     // Flusher para enviar datos inmediatamente
     flusher, ok := w.(http.Flusher)
@@ -82,10 +83,21 @@ func manejarSuscripcionHTTP (w http.ResponseWriter, r *http.Request) {
 
     // Limpiar la conexión cuando el cliente se desconecte
     mutexHTTP.Lock()
-    delete(clientesPorTopico[topico], cliente)
+    // Eliminar el cliente del mapa de clientes por tópico
+    if clientes, exists := clientesPorTopico[topico]; exists {
+        for i, c := range clientes {
+            if c == cliente {
+                clientesPorTopico[topico] = append(clientes[:i], clientes[i+1:]...) // Eliminar el cliente
+                break
+            }
+        }
+    }
+    // Si no hay más clientes en el tópico, eliminar el tópico
     if len(clientesPorTopico[topico]) == 0 {
         delete(clientesPorTopico, topico) // Eliminar el tópico si no tiene clientes
     }
+    // Cerrar el canal del cliente
+    close(cliente.Channel)
     mutexHTTP.Unlock()
 
     loggerPrint(LOG_HTTP, "Cliente desconectado del tópico " + topico)
@@ -108,31 +120,21 @@ func manejarPublicacionHTTP (w http.ResponseWriter, r *http.Request) {
 
 	loggerPrint(LOG_HTTP, "Mensaje recibido en el tópico " + mensaje.Topico)
 
-    // Enviar el mensaje a todos los clientes suscritos al tópico
-    mutexHTTP.Lock()
-    if clientes, exists := clientesPorTopico[mensaje.Topico]; exists {
-        for cliente := range clientes {
-            select {
-            case cliente.Channel <- string(mensaje.Payload):
-                loggerPrint(LOG_HTTP, "Mensaje enviado al tópico " + mensaje.Topico + ": " + string(mensaje.Payload))
-            default:
-                loggerPrint(LOG_HTTP, "No se pudo enviar el mensaje al cliente en el tópico " + mensaje.Topico + " (canal bloqueado)")
-            }
-        }
-    } else {
-        loggerPrint(LOG_HTTP, "No hay clientes suscritos al tópico " + mensaje.Topico)
+    // enviar a los protocolos
+    if mensaje.Original {
+        mensaje.Original = false
+        go enviarHTTP(LOG_HTTP, mensaje)
+        go enviarCoAP(LOG_HTTP, mensaje)
+        go enviarMQTT(LOG_HTTP, mensaje)
     }
-    mutexHTTP.Unlock()
-
-    // enviar a los otros protocolos
-    mensaje.Original = false
-    enviarCoAP(LOG_HTTP, mensaje)
-    enviarMQTT(LOG_HTTP, mensaje)
     // Responder al cliente que envió el POST
     w.WriteHeader(http.StatusOK)
 }
 
 // ver si es posible
+// deberia almacenarse un id de cliente por canal de comunicacion
+// cuando se maneje la desuscripcion con DELETE se deberia eliminar el cliente que se pasa como argumento
+// para ello el cliente debe manejarlo
 func manejarDesuscripcionHTTP (w http.ResponseWriter, r *http.Request) {
-
+        
 }

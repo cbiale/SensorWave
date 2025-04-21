@@ -48,8 +48,8 @@ func manejadorMQTT(cliente MQTT.Client, mensajeMQTT MQTT.Message) {
 	// enviar publicaciones a los otros protocolos (si el mensaje es original)
 	if mensaje.Original {
 		mensaje.Original = false
-		enviarCoAP(LOG_MQTT, mensaje)
-		enviarHTTP(LOG_MQTT, mensaje)
+		go enviarCoAP(LOG_MQTT, mensaje)
+		go enviarHTTP(LOG_MQTT, mensaje)
 	}
 }
 

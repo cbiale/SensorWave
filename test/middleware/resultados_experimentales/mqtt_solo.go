@@ -14,6 +14,7 @@ import (
 var CANTIDAD = 500
 
 func main() {
+
 	servidor := "tcp://localhost:1883"
     opts := mqtt.NewClientOptions()
     opts.AddBroker(servidor)

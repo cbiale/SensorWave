@@ -26,9 +26,7 @@ func IniciarHTTP (puerto string) {
     http.HandleFunc("/sensorwave", manejadorHTTP)
 
     loggerPrint(LOG_HTTP, "Iniciando servidor HTTP en :" + puerto)
-    // loggerFatal(LOG, 
-    http.ListenAndServe(":" + puerto, nil)
-    //)
+    http.ListenAndServe(":" + puerto, nil) // ver de poner loggerFatal
 }
 
 // manejador es el punto de entrada para todas las solicitudes HTTP
@@ -60,7 +58,7 @@ func manejarSuscripcionHTTP (w http.ResponseWriter, r *http.Request) {
     w.Header().Set("Connection", "keep-alive")
 
     // Crear un cliente y agregarlo al mapa de clientes por tópico
-    cliente := &Cliente{Channel: make(chan string)}
+    cliente := &Cliente{Channel: make(chan string, 10000)}
     mutexHTTP.Lock()
 	clientesPorTopico[topico] = append(clientesPorTopico[topico], cliente)
     mutexHTTP.Unlock()

@@ -2,9 +2,9 @@
 
 ## Ejemplo de aplicación
 
-Ejemplo de aplicación que se describe en el apartado `III-A`. Difiere respecto a la publicación que en este ejemplo se usan las bibliotecas clientes desarrolladas en Go.
+En el directorio `ejemplo_case` se encuentra el ejemplo de aplicación que se describe en el apartado `III-A`. Difiere respecto a la publicación que en este ejemplo se usan las bibliotecas clientes desarrolladas en Go.
 
 
-## Resultados experimentales
+## Evaluación de latencia
 
-Implementaciones usadas para obtener los resultados del apartado `III-B`.
+En el directorio `latencia_case` se encuentran los programas usados para obtener los resultados del apartado `III-B`.

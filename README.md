@@ -8,7 +8,7 @@ Los nodos basados en procesadores de bajo consumo tienen limitaciones de procesa
 
 ## Objetivos
 
-Se pretende desarrollar un  , transparente al usuario final, donde los datos residan al borde de la red y en un servicio de almacenamiento en la nube. Las solicitudes al sistema pueden provenir de usuarios locales a un nodo al borde o de usuarios conectados a uno o varios servidores despachadores ubicados en la nube. 
+Se pretende desarrollar un  sistema de almacenamiento distribuido, transparente al usuario final, donde los datos residan al borde de la red y en un servicio de almacenamiento en la nube. Las solicitudes al sistema pueden provenir de usuarios locales a un nodo al borde o de usuarios conectados a uno o varios servidores despachadores ubicados en la nube. 
 
 Los nodos sensores y actuadores son responsables de la transmisión de datos a los nodos al borde y del cambio de estado de los actuadores a petición de los nodos al borde. Para la comunicación entre los nodos al borde y los nodos sensores y actuadores se utiliza el protocolo MQTT o alternativamente el protocolo HTTP.
 

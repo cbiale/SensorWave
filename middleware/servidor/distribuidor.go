@@ -5,7 +5,7 @@ import "encoding/json"
 
 func enviarCoAP(LOG string, payload Mensaje) {
 	// publica el mensaje en el tópico
-	loggerPrint(LOG, ">> Publicando mensaje en el tópico HTTP " + payload.Topico)
+	loggerPrint(LOG, ">> Publicando mensaje en el tópico CoAP " + payload.Topico)
 
 	// notifico a todos los observadores
 	mutexCoAP.Lock()
@@ -28,14 +28,14 @@ func enviarHTTP (LOG string, payload Mensaje) {
 			go func (c *Cliente) {
 				select {
 				case c.Channel <- string(payload.Payload):
-					loggerPrint(LOG, "Mensaje enviado al tópico " + payload.Topico)
+					loggerPrint(LOG, "Mensaje enviado al tópico HTTP" + payload.Topico)
 				default:
-					loggerPrint(LOG, "No se pudo enviar el mensaje al cliente en el tópico " + payload.Topico + " (canal bloqueado)")
+					loggerPrint(LOG, "No se pudo enviar el mensaje al cliente en el tópico HTTP" + payload.Topico + " (canal bloqueado)")
 				}
 			}(cliente)
 		}
     } else {
-        loggerPrint(LOG, "No hay clientes suscritos al tópico " + payload.Topico)
+        loggerPrint(LOG, "No hay clientes suscritos al tópico HTTP " + payload.Topico)
     }
     mutexHTTP.Unlock()	
 }

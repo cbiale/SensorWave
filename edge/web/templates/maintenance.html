@@ -1,0 +1,616 @@
+{{define "maintenance-content"}}
+<div class="maintenance-page">
+    <div class="page-header">
+        <h1>Mantenimiento del Sistema</h1>
+        <p>Gestiona el almacenamiento, compactación y limpieza de datos</p>
+    </div>
+
+    <!-- System Overview -->
+    <div class="system-overview">
+        <div class="overview-card">
+            <div class="card-icon">💾</div>
+            <div class="card-content">
+                <div class="card-title">Uso de Disco</div>
+                <div class="card-value">{{.Stats.DatabaseSize | printf "%d"}} bytes</div>
+                <div class="card-subtitle">Base de datos principal</div>
+            </div>
+        </div>
+        
+        <div class="overview-card">
+            <div class="card-icon">📊</div>
+            <div class="card-content">
+                <div class="card-title">Fragmentación</div>
+                <div class="card-value">{{printf "%.1f%%" .Stats.FragmentationPct}}</div>
+                <div class="card-subtitle">Optimización recomendada > 20%</div>
+            </div>
+        </div>
+        
+        <div class="overview-card">
+            <div class="card-icon">🔄</div>
+            <div class="card-content">
+                <div class="card-title">Última Compactación</div>
+                <div class="card-value">{{.Stats.LastCompaction.Format "15:04"}}</div>
+                <div class="card-subtitle">{{.Stats.LastCompaction.Format "2006-01-02"}}</div>
+            </div>
+        </div>
+        
+        <div class="overview-card">
+            <div class="card-icon">📅</div>
+            <div class="card-content">
+                <div class="card-title">Retención</div>
+                <div class="card-value">{{.Stats.RetentionDays}} días</div>
+                <div class="card-subtitle">{{if .Stats.CleanupEnabled}}Automática{{else}}Manual{{end}}</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Database Operations -->
+    <div class="maintenance-operations">
+        <div class="operations-section">
+            <h3>🔧 Operaciones de Base de Datos</h3>
+            
+            <div class="operations-grid">
+                <!-- Compact Database -->
+                <div class="operation-card">
+                    <div class="operation-header">
+                        <div class="operation-icon">🗜️</div>
+                        <div class="operation-title">Compactar Base de Datos</div>
+                    </div>
+                    <div class="operation-description">
+                        Optimiza el almacenamiento eliminando espacios vacíos y reorganizando datos
+                    </div>
+                    <div class="operation-stats">
+                        <span>Última compactación: {{.Stats.LastCompaction.Format "2006-01-02 15:04"}}</span>
+                        <span>Fragmentación actual: {{printf "%.1f%%" .Stats.FragmentationPct}}</span>
+                    </div>
+                    <div class="operation-actions">
+                        <button onclick="compactDatabase()" 
+                                class="btn btn-primary" 
+                                id="compact-btn">
+                            🔄 Compactar Ahora
+                        </button>
+                        <label class="checkbox-item">
+                            <input type="checkbox" id="auto-compact" checked>
+                            <span>Compactación automática</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Synchronize Data -->
+                <div class="operation-card">
+                    <div class="operation-header">
+                        <div class="operation-icon">💾</div>
+                        <div class="operation-title">Sincronizar Datos</div>
+                    </div>
+                    <div class="operation-description">
+                        Fuerza la escritura de todos los datos pendientes al disco
+                    </div>
+                    <div class="operation-stats">
+                        <span>Datos en memoria: ~2.3MB</span>
+                        <span>Última sincronización: hace 15s</span>
+                    </div>
+                    <div class="operation-actions">
+                        <button onclick="synchronizeData()" 
+                                class="btn btn-secondary" 
+                                id="sync-btn">
+                            💾 Sincronizar
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Data Cleanup -->
+                <div class="operation-card">
+                    <div class="operation-header">
+                        <div class="operation-icon">🧹</div>
+                        <div class="operation-title">Limpieza de Datos</div>
+                    </div>
+                    <div class="operation-description">
+                        Elimina datos antiguos según las políticas de retención configuradas
+                    </div>
+                    <div class="operation-stats">
+                        <span>Datos más antiguos: {{.Stats.OldestRecord.Format "2006-01-02"}}</span>
+                        <span>Retención: {{.Stats.RetentionDays}} días</span>
+                    </div>
+                    <div class="operation-actions">
+                        <button onclick="cleanupOldData()" 
+                                class="btn btn-warning" 
+                                id="cleanup-btn">
+                            🧹 Limpiar Datos Antiguos
+                        </button>
+                        <button onclick="showRetentionSettings()" 
+                                class="btn btn-secondary">
+                            ⚙️ Configurar Retención
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Backup/Export -->
+                <div class="operation-card">
+                    <div class="operation-header">
+                        <div class="operation-icon">📦</div>
+                        <div class="operation-title">Respaldo Completo</div>
+                    </div>
+                    <div class="operation-description">
+                        Crea un respaldo completo de todos los datos del sistema
+                    </div>
+                    <div class="operation-stats">
+                        <span>Último respaldo: Nunca</span>
+                        <span>Tamaño estimado: {{.Stats.DatabaseSize | printf "%d"}} bytes</span>
+                    </div>
+                    <div class="operation-actions">
+                        <button onclick="createBackup()" 
+                                class="btn btn-primary" 
+                                id="backup-btn">
+                            📦 Crear Respaldo
+                        </button>
+                        <button onclick="scheduleBackups()" 
+                                class="btn btn-secondary">
+                            ⏰ Programar Respaldos
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Storage Analysis -->
+    <div class="storage-analysis">
+        <h3>📊 Análisis de Almacenamiento</h3>
+        
+        <div class="analysis-grid">
+            <!-- Storage Breakdown Chart -->
+            <div class="analysis-card">
+                <h4>Uso de Espacio por Tipo</h4>
+                <canvas id="storageChart" width="300" height="200"></canvas>
+            </div>
+            
+            <!-- Storage Trends -->
+            <div class="analysis-card">
+                <h4>Tendencia de Crecimiento</h4>
+                <canvas id="growthChart" width="300" height="200"></canvas>
+            </div>
+            
+            <!-- Data Age Distribution -->
+            <div class="analysis-card">
+                <h4>Distribución por Antigüedad</h4>
+                <div class="age-distribution">
+                    <div class="age-bar">
+                        <div class="age-label">Últimas 24h</div>
+                        <div class="age-progress">
+                            <div class="age-fill" style="width: 35%"></div>
+                        </div>
+                        <div class="age-value">35%</div>
+                    </div>
+                    <div class="age-bar">
+                        <div class="age-label">2-7 días</div>
+                        <div class="age-progress">
+                            <div class="age-fill" style="width: 28%"></div>
+                        </div>
+                        <div class="age-value">28%</div>
+                    </div>
+                    <div class="age-bar">
+                        <div class="age-label">1-4 semanas</div>
+                        <div class="age-progress">
+                            <div class="age-fill" style="width: 25%"></div>
+                        </div>
+                        <div class="age-value">25%</div>
+                    </div>
+                    <div class="age-bar">
+                        <div class="age-label">Más de 1 mes</div>
+                        <div class="age-progress">
+                            <div class="age-fill" style="width: 12%"></div>
+                        </div>
+                        <div class="age-value">12%</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Maintenance Log -->
+    <div class="maintenance-log">
+        <div class="section-header">
+            <h3>📋 Registro de Mantenimiento</h3>
+            <button onclick="clearMaintenanceLog()" class="btn btn-secondary">🗑️ Limpiar Registro</button>
+        </div>
+        
+        <div class="log-container" id="maintenance-log-container">
+            <div class="log-entry success">
+                <div class="log-time">15:23:45</div>
+                <div class="log-type">COMPACTACIÓN</div>
+                <div class="log-message">Compactación automática completada. Espacio liberado: 2.3MB</div>
+            </div>
+            <div class="log-entry info">
+                <div class="log-time">14:30:12</div>
+                <div class="log-type">SINCRONIZACIÓN</div>
+                <div class="log-message">Sincronización manual iniciada por usuario</div>
+            </div>
+            <div class="log-entry warning">
+                <div class="log-time">12:15:33</div>
+                <div class="log-type">LIMPIEZA</div>
+                <div class="log-message">Limpieza de datos antiguos: 150 registros eliminados</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Retention Settings Modal -->
+    <div id="retentionModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>⚙️ Configuración de Retención</h3>
+                <span class="close" onclick="closeRetentionModal()">&times;</span>
+            </div>
+            <div class="modal-body">
+                <form id="retentionForm">
+                    <div class="form-group">
+                        <label for="retentionDays">Días de Retención</label>
+                        <input type="number" id="retentionDays" min="1" max="365" value="{{.Stats.RetentionDays}}">
+                        <small>Datos más antiguos serán eliminados automáticamente</small>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="checkbox-item">
+                            <input type="checkbox" id="autoCleanup" {{if .Stats.CleanupEnabled}}checked{{end}}>
+                            <span>Limpieza automática habilitada</span>
+                        </label>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="cleanupSchedule">Frecuencia de Limpieza</label>
+                        <select id="cleanupSchedule">
+                            <option value="daily">Diaria</option>
+                            <option value="weekly" selected>Semanal</option>
+                            <option value="monthly">Mensual</option>
+                        </select>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button onclick="saveRetentionSettings()" class="btn btn-primary">Guardar</button>
+                <button onclick="closeRetentionModal()" class="btn btn-secondary">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Progress Modal -->
+    <div id="progressModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="progressTitle">Procesando...</h3>
+            </div>
+            <div class="modal-body">
+                <div class="progress-container">
+                    <div class="progress-bar">
+                        <div id="modalProgressFill" class="progress-fill"></div>
+                    </div>
+                    <div class="progress-text">
+                        <span id="modalProgressStatus">Iniciando...</span>
+                        <span id="modalProgressPercentage">0%</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Maintenance page JavaScript
+let storageChart, growthChart;
+
+document.addEventListener('DOMContentLoaded', function() {
+    initializeCharts();
+    loadMaintenanceStats();
+});
+
+function initializeCharts() {
+    // Storage breakdown chart
+    const storageCtx = document.getElementById('storageChart').getContext('2d');
+    storageChart = new Chart(storageCtx, {
+        type: 'doughnut',
+        data: {
+            labels: ['Datos de Sensores', 'Índices', 'Metadatos', 'WAL/Logs'],
+            datasets: [{
+                data: [75, 15, 8, 2],
+                backgroundColor: ['#4CAF50', '#2196F3', '#FF9800', '#9C27B0']
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'bottom'
+                }
+            }
+        }
+    });
+
+    // Growth trend chart
+    const growthCtx = document.getElementById('growthChart').getContext('2d');
+    growthChart = new Chart(growthCtx, {
+        type: 'line',
+        data: {
+            labels: ['Hace 6d', 'Hace 5d', 'Hace 4d', 'Hace 3d', 'Hace 2d', 'Ayer', 'Hoy'],
+            datasets: [{
+                label: 'Tamaño DB (MB)',
+                data: [120, 125, 128, 135, 142, 148, 152],
+                borderColor: '#4CAF50',
+                backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                tension: 0.1
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                y: {
+                    beginAtZero: false,
+                    title: {
+                        display: true,
+                        text: 'Tamaño (MB)'
+                    }
+                }
+            }
+        }
+    });
+}
+
+function loadMaintenanceStats() {
+    fetch('/api/maintenance/stats')
+        .then(response => response.json())
+        .then(stats => {
+            updateStatsDisplay(stats);
+        })
+        .catch(error => {
+            console.error('Error loading maintenance stats:', error);
+        });
+}
+
+function updateStatsDisplay(stats) {
+    // Update overview cards with real data
+    // This would be implemented with actual stats from the API
+}
+
+function compactDatabase() {
+    const btn = document.getElementById('compact-btn');
+    btn.disabled = true;
+    btn.textContent = '🔄 Compactando...';
+    
+    showProgressModal('Compactando Base de Datos', 'Iniciando compactación...');
+    
+    fetch('/api/maintenance/compact', { method: 'POST' })
+        .then(response => response.json())
+        .then(result => {
+            if (result.success) {
+                addMaintenanceLogEntry('success', 'COMPACTACIÓN', 
+                    `Compactación completada en ${result.duration_ms}ms. ${result.message}`);
+                showNotification('Base de datos compactada exitosamente', 'success');
+                loadMaintenanceStats(); // Refresh stats
+            } else {
+                throw new Error(result.message || 'Error en compactación');
+            }
+        })
+        .catch(error => {
+            addMaintenanceLogEntry('error', 'COMPACTACIÓN', `Error: ${error.message}`);
+            showNotification('Error compactando base de datos', 'error');
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = '🔄 Compactar Ahora';
+            closeProgressModal();
+        });
+}
+
+function synchronizeData() {
+    const btn = document.getElementById('sync-btn');
+    btn.disabled = true;
+    btn.textContent = '💾 Sincronizando...';
+    
+    fetch('/api/maintenance/sync', { method: 'POST' })
+        .then(response => {
+            if (response.ok) {
+                addMaintenanceLogEntry('success', 'SINCRONIZACIÓN', 'Datos sincronizados al disco');
+                showNotification('Datos sincronizados correctamente', 'success');
+            } else {
+                throw new Error('Error en sincronización');
+            }
+        })
+        .catch(error => {
+            addMaintenanceLogEntry('error', 'SINCRONIZACIÓN', `Error: ${error.message}`);
+            showNotification('Error sincronizando datos', 'error');
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = '💾 Sincronizar';
+        });
+}
+
+function cleanupOldData() {
+    if (!confirm('¿Estás seguro de eliminar datos antiguos? Esta acción no se puede deshacer.')) {
+        return;
+    }
+    
+    const btn = document.getElementById('cleanup-btn');
+    btn.disabled = true;
+    btn.textContent = '🧹 Limpiando...';
+    
+    showProgressModal('Limpiando Datos Antiguos', 'Identificando datos antiguos...');
+    
+    fetch('/api/maintenance/cleanup', { method: 'POST' })
+        .then(response => response.json())
+        .then(result => {
+            if (result.success) {
+                addMaintenanceLogEntry('warning', 'LIMPIEZA', 
+                    `${result.deletedRecords} registros eliminados. Espacio liberado: ${result.freedSpace}`);
+                showNotification(`Limpieza completada: ${result.deletedRecords} registros eliminados`, 'success');
+                loadMaintenanceStats();
+            } else {
+                throw new Error(result.message || 'Error en limpieza');
+            }
+        })
+        .catch(error => {
+            addMaintenanceLogEntry('error', 'LIMPIEZA', `Error: ${error.message}`);
+            showNotification('Error en limpieza de datos', 'error');
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = '🧹 Limpiar Datos Antiguos';
+            closeProgressModal();
+        });
+}
+
+function createBackup() {
+    const btn = document.getElementById('backup-btn');
+    btn.disabled = true;
+    btn.textContent = '📦 Creando Respaldo...';
+    
+    showProgressModal('Creando Respaldo Completo', 'Preparando respaldo...');
+    
+    fetch('/api/maintenance/backup', { method: 'POST' })
+        .then(response => {
+            if (response.ok) {
+                return response.blob();
+            }
+            throw new Error('Error creando respaldo');
+        })
+        .then(blob => {
+            // Download backup file
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `edgesensorwave_backup_${new Date().toISOString().slice(0,19).replace(/[:-]/g, '')}.esw`;
+            a.click();
+            window.URL.revokeObjectURL(url);
+            
+            addMaintenanceLogEntry('success', 'RESPALDO', 
+                `Respaldo completo creado: ${a.download}`);
+            showNotification('Respaldo creado y descargado', 'success');
+        })
+        .catch(error => {
+            addMaintenanceLogEntry('error', 'RESPALDO', `Error: ${error.message}`);
+            showNotification('Error creando respaldo', 'error');
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.textContent = '📦 Crear Respaldo';
+            closeProgressModal();
+        });
+}
+
+function showRetentionSettings() {
+    document.getElementById('retentionModal').style.display = 'block';
+}
+
+function closeRetentionModal() {
+    document.getElementById('retentionModal').style.display = 'none';
+}
+
+function saveRetentionSettings() {
+    const settings = {
+        retentionDays: document.getElementById('retentionDays').value,
+        autoCleanup: document.getElementById('autoCleanup').checked,
+        cleanupSchedule: document.getElementById('cleanupSchedule').value
+    };
+    
+    fetch('/api/maintenance/retention', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settings)
+    })
+    .then(response => {
+        if (response.ok) {
+            addMaintenanceLogEntry('info', 'CONFIGURACIÓN', 
+                `Retención actualizada: ${settings.retentionDays} días`);
+            showNotification('Configuración de retención guardada', 'success');
+            closeRetentionModal();
+        } else {
+            throw new Error('Error guardando configuración');
+        }
+    })
+    .catch(error => {
+        showNotification('Error guardando configuración', 'error');
+    });
+}
+
+function scheduleBackups() {
+    showNotification('Funcionalidad de respaldos programados en desarrollo', 'info');
+}
+
+function addMaintenanceLogEntry(type, operation, message) {
+    const logContainer = document.getElementById('maintenance-log-container');
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${type}`;
+    
+    const now = new Date();
+    entry.innerHTML = `
+        <div class="log-time">${now.toTimeString().slice(0,8)}</div>
+        <div class="log-type">${operation}</div>
+        <div class="log-message">${message}</div>
+    `;
+    
+    // Insert at the beginning
+    logContainer.insertBefore(entry, logContainer.firstChild);
+    
+    // Keep only last 20 entries
+    while (logContainer.children.length > 20) {
+        logContainer.removeChild(logContainer.lastChild);
+    }
+}
+
+function clearMaintenanceLog() {
+    if (confirm('¿Limpiar todo el registro de mantenimiento?')) {
+        document.getElementById('maintenance-log-container').innerHTML = '';
+        showNotification('Registro de mantenimiento limpiado', 'success');
+    }
+}
+
+function showProgressModal(title, status) {
+    document.getElementById('progressTitle').textContent = title;
+    document.getElementById('modalProgressStatus').textContent = status;
+    document.getElementById('modalProgressPercentage').textContent = '0%';
+    document.getElementById('modalProgressFill').style.width = '0%';
+    document.getElementById('progressModal').style.display = 'block';
+    
+    // Simulate progress
+    let progress = 0;
+    const interval = setInterval(() => {
+        progress += Math.random() * 20;
+        if (progress > 100) {
+            progress = 100;
+            clearInterval(interval);
+        }
+        
+        document.getElementById('modalProgressFill').style.width = progress + '%';
+        document.getElementById('modalProgressPercentage').textContent = Math.round(progress) + '%';
+        
+        if (progress < 30) {
+            document.getElementById('modalProgressStatus').textContent = 'Procesando...';
+        } else if (progress < 70) {
+            document.getElementById('modalProgressStatus').textContent = 'Optimizando...';
+        } else if (progress < 100) {
+            document.getElementById('modalProgressStatus').textContent = 'Finalizando...';
+        } else {
+            document.getElementById('modalProgressStatus').textContent = 'Completado';
+        }
+    }, 300);
+}
+
+function closeProgressModal() {
+    document.getElementById('progressModal').style.display = 'none';
+}
+
+// Close modals when clicking outside
+window.onclick = function(event) {
+    const retentionModal = document.getElementById('retentionModal');
+    const progressModal = document.getElementById('progressModal');
+    
+    if (event.target === retentionModal) {
+        closeRetentionModal();
+    }
+    if (event.target === progressModal) {
+        closeProgressModal();
+    }
+}
+
+// Auto-refresh stats every 60 seconds
+setInterval(loadMaintenanceStats, 60000);
+</script>
+{{end}}

@@ -1,0 +1,498 @@
+{{define "alerts-content"}}
+<div class="alerts-page">
+    <div class="page-header">
+        <h1>Gestión de Alertas</h1>
+        <p>Configura y monitorea alertas para tus sensores</p>
+    </div>
+
+    <!-- Alerts Overview -->
+    <div class="alerts-overview">
+        <div class="overview-card">
+            <div class="card-icon">🚨</div>
+            <div class="card-content">
+                <div class="card-title">Alertas Activas</div>
+                <div class="card-value" id="active-alerts-count">{{len .Rules}}</div>
+            </div>
+        </div>
+        
+        <div class="overview-card">
+            <div class="card-icon">⏰</div>
+            <div class="card-content">
+                <div class="card-title">Eventos Recientes</div>
+                <div class="card-value" id="recent-events-count">{{len .Events}}</div>
+            </div>
+        </div>
+        
+        <div class="overview-card">
+            <div class="card-icon">✅</div>
+            <div class="card-content">
+                <div class="card-title">Resueltos Hoy</div>
+                <div class="card-value" id="resolved-today-count">0</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create New Alert -->
+    <div class="create-alert-section">
+        <button onclick="showCreateAlertForm()" class="btn btn-primary">
+            ➕ Nueva Alerta
+        </button>
+    </div>
+
+    <!-- Create Alert Form (Hidden by default) -->
+    <div id="create-alert-form" class="alert-form" style="display: none;">
+        <div class="form-header">
+            <h3>Crear Nueva Alerta</h3>
+            <button onclick="hideCreateAlertForm()" class="close-btn">&times;</button>
+        </div>
+        
+        <form hx-post="/api/alerts" hx-target="#alerts-table" hx-swap="outerHTML">
+            <div class="form-grid">
+                <div class="form-group">
+                    <label for="alertName">Nombre de la Alerta</label>
+                    <input type="text" id="alertName" name="name" required 
+                           placeholder="ej: Temperatura alta salón">
+                </div>
+
+                <div class="form-group">
+                    <label for="sensorId">Sensor ID</label>
+                    <input type="text" id="sensorId" name="sensorId" required 
+                           placeholder="ej: temperatura.salon" list="sensor-list-alerts">
+                    <datalist id="sensor-list-alerts">
+                        <!-- Will be populated dynamically -->
+                    </datalist>
+                </div>
+
+                <div class="form-group">
+                    <label for="operator">Operador</label>
+                    <select id="operator" name="operator" required>
+                        <option value="">Seleccionar...</option>
+                        <option value=">">Mayor que (>)</option>
+                        <option value="<">Menor que (<)</option>
+                        <option value=">=">Mayor o igual (>=)</option>
+                        <option value="<=">Menor o igual (<=)</option>
+                        <option value="==">Igual (==)</option>
+                        <option value="!=">Diferente (!=)</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="threshold">Valor Umbral</label>
+                    <input type="number" id="threshold" name="threshold" step="0.01" required
+                           placeholder="ej: 30.5">
+                </div>
+
+                <div class="form-group full-width">
+                    <label for="description">Descripción</label>
+                    <textarea id="description" name="description" rows="3"
+                              placeholder="Descripción opcional de la alerta"></textarea>
+                </div>
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Crear Alerta</button>
+                <button type="button" onclick="hideCreateAlertForm()" class="btn btn-secondary">Cancelar</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Alert Rules Table -->
+    <div class="alerts-table-section">
+        <div class="section-header">
+            <h3>Reglas de Alerta</h3>
+            <div class="table-controls">
+                <select id="status-filter" onchange="filterAlerts()">
+                    <option value="all">Todas las alertas</option>
+                    <option value="enabled">Habilitadas</option>
+                    <option value="disabled">Deshabilitadas</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <table id="alerts-table" class="alerts-table">
+                <thead>
+                    <tr>
+                        <th>Estado</th>
+                        <th>Nombre</th>
+                        <th>Sensor</th>
+                        <th>Condición</th>
+                        <th>Última Verificación</th>
+                        <th>Acciones</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .Rules}}
+                    <tr class="alert-row" data-enabled="{{.Enabled}}">
+                        <td>
+                            <label class="toggle-switch">
+                                <input type="checkbox" {{if .Enabled}}checked{{end}} 
+                                       onchange="toggleAlert('{{.ID}}')">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </td>
+                        <td class="alert-name">{{.Name}}</td>
+                        <td class="sensor-id">{{.SensorID}}</td>
+                        <td class="condition">
+                            <span class="condition-text">
+                                valor {{.Operator}} {{printf "%.2f" .Threshold}}
+                            </span>
+                        </td>
+                        <td class="last-check">
+                            {{if .LastCheck.IsZero}}
+                                Nunca
+                            {{else}}
+                                {{.LastCheck.Format "15:04:05"}}
+                            {{end}}
+                        </td>
+                        <td class="alert-actions">
+                            <button onclick="editAlert('{{.ID}}')" class="btn btn-sm">✏️</button>
+                            <button onclick="testAlert('{{.ID}}')" class="btn btn-sm">🧪</button>
+                            <button onclick="deleteAlert('{{.ID}}')" class="btn btn-sm btn-danger">🗑️</button>
+                        </td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Recent Events -->
+    <div class="events-section">
+        <div class="section-header">
+            <h3>Eventos Recientes</h3>
+            <div class="events-controls">
+                <button onclick="refreshEvents()" class="btn btn-secondary">🔄 Actualizar</button>
+                <button onclick="clearResolvedEvents()" class="btn btn-secondary">🧹 Limpiar Resueltos</button>
+            </div>
+        </div>
+
+        <div class="events-container" 
+             hx-get="/api/alerts/events" 
+             hx-trigger="every 30s" 
+             hx-target="#events-list">
+            <div id="events-list" class="events-list">
+                {{range .Events}}
+                <div class="event-item {{if .Resolved}}resolved{{else}}active{{end}}">
+                    <div class="event-header">
+                        <span class="event-time">{{.Timestamp.Format "15:04:05"}}</span>
+                        <span class="event-sensor">{{.SensorID}}</span>
+                        {{if not .Resolved}}
+                        <button onclick="resolveEvent('{{.ID}}')" class="btn btn-sm">✅ Resolver</button>
+                        {{end}}
+                    </div>
+                    <div class="event-message">{{.Message}}</div>
+                    <div class="event-details">
+                        <span>Valor: {{printf "%.2f" .Value}}</span>
+                        <span>Umbral: {{printf "%.2f" .Threshold}}</span>
+                    </div>
+                </div>
+                {{end}}
+            </div>
+        </div>
+    </div>
+
+    <!-- Alert Statistics -->
+    <div class="stats-section">
+        <h3>Estadísticas de Alertas</h3>
+        <div class="stats-grid">
+            <div class="stat-item">
+                <div class="stat-label">Promedio eventos/día</div>
+                <div class="stat-value">12.3</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Tiempo promedio resolución</div>
+                <div class="stat-value">5.2 min</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Sensor más activo</div>
+                <div class="stat-value">temperatura.salon</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-label">Alertas esta semana</div>
+                <div class="stat-value">47</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Alert Modal -->
+<div id="editAlertModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>Editar Alerta</h3>
+            <span class="close" onclick="closeEditModal()">&times;</span>
+        </div>
+        <div class="modal-body">
+            <form id="editAlertForm">
+                <input type="hidden" id="editAlertId">
+                <div class="form-group">
+                    <label for="editAlertName">Nombre</label>
+                    <input type="text" id="editAlertName" required>
+                </div>
+                <div class="form-group">
+                    <label for="editSensorId">Sensor ID</label>
+                    <input type="text" id="editSensorId" required>
+                </div>
+                <div class="form-group">
+                    <label for="editOperator">Operador</label>
+                    <select id="editOperator" required>
+                        <option value=">">Mayor que (>)</option>
+                        <option value="<">Menor que (<)</option>
+                        <option value=">=">Mayor o igual (>=)</option>
+                        <option value="<=">Menor o igual (<=)</option>
+                        <option value="==">Igual (==)</option>
+                        <option value="!=">Diferente (!=)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="editThreshold">Umbral</label>
+                    <input type="number" id="editThreshold" step="0.01" required>
+                </div>
+                <div class="form-group">
+                    <label for="editDescription">Descripción</label>
+                    <textarea id="editDescription" rows="3"></textarea>
+                </div>
+            </form>
+        </div>
+        <div class="modal-footer">
+            <button onclick="saveEditAlert()" class="btn btn-primary">Guardar</button>
+            <button onclick="closeEditModal()" class="btn btn-secondary">Cancelar</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// Alerts page JavaScript
+let alertsData = [];
+
+document.addEventListener('DOMContentLoaded', function() {
+    loadSensorsList();
+    loadAlertsData();
+    
+    // Pre-fill sensor if provided in URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const sensorParam = urlParams.get('sensor');
+    if (sensorParam) {
+        document.getElementById('sensorId').value = sensorParam;
+        showCreateAlertForm();
+    }
+});
+
+function loadSensorsList() {
+    fetch('/api/sensors')
+        .then(response => response.json())
+        .then(sensors => {
+            const datalist = document.getElementById('sensor-list-alerts');
+            datalist.innerHTML = '';
+            sensors.forEach(sensor => {
+                const option = document.createElement('option');
+                option.value = sensor.id;
+                datalist.appendChild(option);
+            });
+        })
+        .catch(error => console.error('Error loading sensors:', error));
+}
+
+function loadAlertsData() {
+    fetch('/api/alerts')
+        .then(response => response.json())
+        .then(data => {
+            alertsData = data;
+            updateAlertsStats();
+        })
+        .catch(error => console.error('Error loading alerts:', error));
+}
+
+function updateAlertsStats() {
+    const activeCount = alertsData.filter(alert => alert.enabled).length;
+    document.getElementById('active-alerts-count').textContent = activeCount;
+}
+
+function showCreateAlertForm() {
+    document.getElementById('create-alert-form').style.display = 'block';
+    document.getElementById('alertName').focus();
+}
+
+function hideCreateAlertForm() {
+    document.getElementById('create-alert-form').style.display = 'none';
+    document.querySelector('#create-alert-form form').reset();
+}
+
+function toggleAlert(alertId) {
+    fetch(`/api/alerts/${alertId}/toggle`, { method: 'POST' })
+        .then(response => {
+            if (response.ok) {
+                showNotification('Estado de alerta actualizado', 'success');
+                loadAlertsData();
+            } else {
+                showNotification('Error actualizando alerta', 'error');
+            }
+        })
+        .catch(error => {
+            showNotification('Error de conexión', 'error');
+        });
+}
+
+function editAlert(alertId) {
+    const alert = alertsData.find(a => a.id === alertId);
+    if (!alert) {
+        showNotification('Alerta no encontrada', 'error');
+        return;
+    }
+    
+    // Populate edit form
+    document.getElementById('editAlertId').value = alert.id;
+    document.getElementById('editAlertName').value = alert.name;
+    document.getElementById('editSensorId').value = alert.sensorId;
+    document.getElementById('editOperator').value = alert.operator;
+    document.getElementById('editThreshold').value = alert.threshold;
+    document.getElementById('editDescription').value = alert.description || '';
+    
+    // Show modal
+    document.getElementById('editAlertModal').style.display = 'block';
+}
+
+function closeEditModal() {
+    document.getElementById('editAlertModal').style.display = 'none';
+}
+
+function saveEditAlert() {
+    const alertId = document.getElementById('editAlertId').value;
+    const alertData = {
+        id: alertId,
+        name: document.getElementById('editAlertName').value,
+        sensorId: document.getElementById('editSensorId').value,
+        operator: document.getElementById('editOperator').value,
+        threshold: parseFloat(document.getElementById('editThreshold').value),
+        description: document.getElementById('editDescription').value
+    };
+    
+    fetch(`/api/alerts/${alertId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(alertData)
+    })
+    .then(response => {
+        if (response.ok) {
+            showNotification('Alerta actualizada', 'success');
+            closeEditModal();
+            location.reload(); // Refresh to show changes
+        } else {
+            showNotification('Error actualizando alerta', 'error');
+        }
+    })
+    .catch(error => {
+        showNotification('Error de conexión', 'error');
+    });
+}
+
+function testAlert(alertId) {
+    fetch(`/api/alerts/${alertId}/test`, { method: 'POST' })
+        .then(response => response.json())
+        .then(result => {
+            if (result.triggered) {
+                showNotification(`Alerta activada: ${result.message}`, 'warning');
+            } else {
+                showNotification('Alerta no activada con valores actuales', 'info');
+            }
+        })
+        .catch(error => {
+            showNotification('Error probando alerta', 'error');
+        });
+}
+
+function deleteAlert(alertId) {
+    if (!confirm('¿Estás seguro de eliminar esta alerta?')) {
+        return;
+    }
+    
+    fetch(`/api/alerts/${alertId}`, { method: 'DELETE' })
+        .then(response => {
+            if (response.ok) {
+                showNotification('Alerta eliminada', 'success');
+                location.reload(); // Refresh to show changes
+            } else {
+                showNotification('Error eliminando alerta', 'error');
+            }
+        })
+        .catch(error => {
+            showNotification('Error de conexión', 'error');
+        });
+}
+
+function filterAlerts() {
+    const filter = document.getElementById('status-filter').value;
+    const rows = document.querySelectorAll('.alert-row');
+    
+    rows.forEach(row => {
+        const enabled = row.getAttribute('data-enabled') === 'true';
+        let show = true;
+        
+        if (filter === 'enabled' && !enabled) {
+            show = false;
+        } else if (filter === 'disabled' && enabled) {
+            show = false;
+        }
+        
+        row.style.display = show ? '' : 'none';
+    });
+}
+
+function refreshEvents() {
+    htmx.trigger(document.querySelector('#events-list').parentElement, 'refresh');
+    showNotification('Eventos actualizados', 'success');
+}
+
+function resolveEvent(eventId) {
+    fetch(`/api/alerts/events/${eventId}/resolve`, { method: 'POST' })
+        .then(response => {
+            if (response.ok) {
+                showNotification('Evento marcado como resuelto', 'success');
+                refreshEvents();
+            } else {
+                showNotification('Error resolviendo evento', 'error');
+            }
+        })
+        .catch(error => {
+            showNotification('Error de conexión', 'error');
+        });
+}
+
+function clearResolvedEvents() {
+    if (!confirm('¿Eliminar todos los eventos resueltos?')) {
+        return;
+    }
+    
+    fetch('/api/alerts/events/clear-resolved', { method: 'POST' })
+        .then(response => {
+            if (response.ok) {
+                showNotification('Eventos resueltos eliminados', 'success');
+                refreshEvents();
+            } else {
+                showNotification('Error limpiando eventos', 'error');
+            }
+        })
+        .catch(error => {
+            showNotification('Error de conexión', 'error');
+        });
+}
+
+// Handle successful form submission
+document.addEventListener('htmx:afterSwap', function(event) {
+    if (event.target.id === 'alerts-table') {
+        hideCreateAlertForm();
+        showNotification('Alerta creada exitosamente', 'success');
+        loadAlertsData();
+    }
+});
+
+// Close modal when clicking outside
+window.onclick = function(event) {
+    const modal = document.getElementById('editAlertModal');
+    if (event.target === modal) {
+        closeEditModal();
+    }
+}
+</script>
+{{end}}

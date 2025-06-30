@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <div class="nav-brand">
+                <span class="brand-icon">📊</span>
+                <span class="brand-text">EdgeSensorWave Admin</span>
+                <span class="version">v{{.Version}}</span>
+            </div>
+            
+            <div class="nav-menu">
+                <a href="/" class="nav-item">
+                    <span class="nav-icon">🏠</span>
+                    Dashboard
+                </a>
+                <a href="/consulta" class="nav-item">
+                    <span class="nav-icon">🔍</span>
+                    Consultas
+                </a>
+                <a href="/alertas" class="nav-item">
+                    <span class="nav-icon">🚨</span>
+                    Alertas
+                </a>
+                <a href="/exportar" class="nav-item">
+                    <span class="nav-icon">📤</span>
+                    Exportar
+                </a>
+                <a href="/mantenimiento" class="nav-item">
+                    <span class="nav-icon">🔧</span>
+                    Mantenimiento
+                </a>
+            </div>
+            
+            <div class="nav-status">
+                <div id="connection-status" class="status-indicator online">
+                    <span class="status-dot"></span>
+                    En línea
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        {{if eq .Page "dashboard"}}
+            {{template "dashboard-content" .}}
+        {{else if eq .Page "query"}}
+            {{template "query-content" .}}
+        {{else if eq .Page "alerts"}}
+            {{template "alerts-content" .}}
+        {{else if eq .Page "export"}}
+            {{template "export-content" .}}
+        {{else if eq .Page "maintenance"}}
+            {{template "maintenance-content" .}}
+        {{else}}
+            {{template "dashboard-content" .}}
+        {{end}}
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-content">
+            <span>EdgeSensorWave Admin © 2025</span>
+            <span>Actualizado: <span id="last-update">--:--:--</span></span>
+        </div>
+    </footer>
+
+    <!-- Notification Container -->
+    <div id="notifications" class="notifications"></div>
+
+    <!-- Scripts -->
+    <script src="/static/js/app.js"></script>
+    <script>
+        // Auto-update timestamp
+        function updateTimestamp() {
+            const now = new Date();
+            document.getElementById('last-update').textContent = now.toLocaleTimeString();
+        }
+        updateTimestamp();
+        setInterval(updateTimestamp, 1000);
+
+        // Connection status monitoring
+        function checkConnection() {
+            fetch('/api/metrics')
+                .then(() => {
+                    document.getElementById('connection-status').className = 'status-indicator online';
+                    document.getElementById('connection-status').innerHTML = '<span class="status-dot"></span>En línea';
+                })
+                .catch(() => {
+                    document.getElementById('connection-status').className = 'status-indicator offline';
+                    document.getElementById('connection-status').innerHTML = '<span class="status-dot"></span>Sin conexión';
+                });
+        }
+        setInterval(checkConnection, 30000); // Check every 30 seconds
+    </script>
+</body>
+</html>

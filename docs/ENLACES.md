@@ -28,14 +28,6 @@
 
 ## Ayuda
 
-- Obtener compilador de FlatBuffers: 
-    ```
-    sudo apt-get install flatbuffers-compiler
-    ```
-- Compilar un archivo `.fbs`: 
-    ```
-    flatc --go payload.fbs
-    ```
 - Biblioteca de Docker en go: 
     ```
     go get github.com/docker/docker/client

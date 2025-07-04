@@ -8,7 +8,6 @@ import (
 	sw_cliente "github.com/cbiale/sensorwave/middleware/cliente_mqtt"
 )
 
-
 var cliente *sw_cliente.ClienteMQTT
 
 func main() {
@@ -27,6 +26,6 @@ func main() {
 
 // aleatorio genera un número aleatorio entre min y max
 func aleatorio(min, max int) int {
-    rand.New(rand.NewSource(time.Now().UnixNano()))
-    return rand.Intn(max-min) + min
+	rand.New(rand.NewSource(time.Now().UnixNano()))
+	return rand.Intn(max-min) + min
 }

@@ -8,17 +8,17 @@ import (
 	"strconv"
 	"time"
 
-	sw_http "github.com/cbiale/sensorwave/middleware/cliente_http"
-	sw_coap "github.com/cbiale/sensorwave/middleware/cliente_coap"
-	sw_mqtt "github.com/cbiale/sensorwave/middleware/cliente_mqtt"
 	"github.com/cbiale/sensorwave/middleware"
+	sw_coap "github.com/cbiale/sensorwave/middleware/cliente_coap"
+	sw_http "github.com/cbiale/sensorwave/middleware/cliente_http"
+	sw_mqtt "github.com/cbiale/sensorwave/middleware/cliente_mqtt"
 )
 
 var (
-	cliente_p, cliente_s middleware.Cliente
+	cliente_p, cliente_s                     middleware.Cliente
 	protocoloPublicador, protocoloSuscriptor string
-	CANTIDAD = 500
-	TIEMPO = 1
+	CANTIDAD                                 = 500
+	TIEMPO                                   = 1
 )
 
 func main() {
@@ -32,14 +32,14 @@ func main() {
 
 	protocoloPublicador = os.Args[1]
 	protocoloSuscriptor = os.Args[2]
-	
+
 	if protocoloPublicador != "http" && protocoloPublicador != "mqtt" && protocoloPublicador != "coap" {
 		log.Fatal("El protocolo publicador debe ser http, mqtt o coap")
 	}
 	if protocoloSuscriptor != "http" && protocoloSuscriptor != "mqtt" && protocoloSuscriptor != "coap" {
 		log.Fatal("El protocolo suscriptor debe ser http, mqtt o coap")
 	}
-	
+
 	// si el protocolo publicador es http
 	if protocoloPublicador == "http" {
 		// crea un nuevo cliente http
@@ -85,7 +85,7 @@ func main() {
 	}
 
 	// espero un tiempo para que el suscriptor reciba los mensajes
-	time.Sleep(time.Duration(TIEMPO * 3) * time.Second)
+	time.Sleep(time.Duration(TIEMPO*3) * time.Second)
 }
 
 func manejadorTest(topico string, mensaje interface{}) {
@@ -95,27 +95,27 @@ func manejadorTest(topico string, mensaje interface{}) {
 
 	// almacenar en un archivo csv el tiempo de envio y de llegada del mensaje
 	almacenar(enviado, recibido)
-	log.Printf("%d,%d,%d\n", enviado, recibido, recibido - enviado)
-} 
+	log.Printf("%d,%d,%d\n", enviado, recibido, recibido-enviado)
+}
 
 func almacenar(enviado, recibido int64) {
-	archivo, err := os.OpenFile("datos_" + protocoloPublicador + "_" + protocoloSuscriptor + "_middleware.csv", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	archivo, err := os.OpenFile("datos_"+protocoloPublicador+"_"+protocoloSuscriptor+"_middleware.csv", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Fatalf("Error al abrir el archivo: %v", err)
 	}
 	defer archivo.Close()
 
-    // Crear un escritor CSV
-    writer := csv.NewWriter(archivo)
-    defer writer.Flush()
+	// Crear un escritor CSV
+	writer := csv.NewWriter(archivo)
+	defer writer.Flush()
 
-    // Escribir los datos en el archivo CSV
-    err = writer.Write([]string{
-        fmt.Sprintf("%d", enviado), // Tiempo de envío
-        fmt.Sprintf("%d", recibido), // Tiempo de llegada
-        fmt.Sprintf("%d", recibido - enviado), // Latencia
-    })
-    if err != nil {
-        log.Fatalf("Error al escribir en el archivo CSV: %v", err)
-    }
+	// Escribir los datos en el archivo CSV
+	err = writer.Write([]string{
+		fmt.Sprintf("%d", enviado),          // Tiempo de envío
+		fmt.Sprintf("%d", recibido),         // Tiempo de llegada
+		fmt.Sprintf("%d", recibido-enviado), // Latencia
+	})
+	if err != nil {
+		log.Fatalf("Error al escribir en el archivo CSV: %v", err)
+	}
 }

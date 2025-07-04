@@ -30,8 +30,8 @@ void app_main(void) {
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
     middleware_conectar(MQTT, "localhost", 1883);
-    middleware_suscribir("/sensors/temp", mi_funcion);
-    middleware_publicar("/sensors/temp", "23");
+    middleware_suscribir("/señals/temp", mi_funcion);
+    middleware_publicar("/señals/temp", "23");
     middleware_desconectar();
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/nats-io/nats.go"
 )
 
 type OperacionEscritura struct {
@@ -30,6 +32,8 @@ type ManagerEdge struct {
 	counter     int           // Contador para serie_id
 	mu          sync.RWMutex  // Mutex para proteger counter
 	motorReglas *MotorReglas  // Motor de reglas integrado
+	natsConn    *nats.Conn    // Conexión NATS
+	nodeID      string        // ID del nodo Edge
 }
 
 type Cache struct {
@@ -937,3 +941,279 @@ func (me *ManagerEdge) HabilitarMotorReglas(habilitado bool) {
 	me.motorReglas.Habilitar(habilitado)
 }
 
+// =============================================================================
+// FUNCIONES NATS
+// =============================================================================
+
+// IniciarServicioNATS inicializa la conexión NATS y servicios del nodo Edge
+func (me *ManagerEdge) IniciarServicioNATS(nodeID, natsURL string) error {
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		return fmt.Errorf("error conectando a NATS: %v", err)
+	}
+	me.natsConn = nc
+	me.nodeID = nodeID
+
+	// Registrarse con el despachador
+	registroMsg := map[string]interface{}{
+		"id":        nodeID,
+		"direccion": "nats://" + nodeID,
+		"timestamp": time.Now(),
+	}
+	registroBytes, _ := json.Marshal(registroMsg)
+	nc.Publish("despachador.registro", registroBytes)
+
+	// Suscribirse a comandos del despachador
+	nc.Subscribe("edge."+nodeID+".crear_serie", me.manejarCrearSerieNATS)
+	nc.Subscribe("edge."+nodeID+".obtener_series", me.manejarObtenerSeriesNATS)
+	nc.Subscribe("edge."+nodeID+".listar_series", me.manejarListarSeriesNATS)
+	nc.Subscribe("edge."+nodeID+".insertar", me.manejarInsertarNATS)
+	nc.Subscribe("edge."+nodeID+".consultar_rango", me.manejarConsultarRangoNATS)
+	nc.Subscribe("edge."+nodeID+".consultar_ultimo_punto", me.manejarConsultarUltimoPuntoNATS)
+	nc.Subscribe("edge."+nodeID+".consultar_primer_punto", me.manejarConsultarPrimerPuntoNATS)
+
+	// Suscribirse a comandos de reglas
+	nc.Subscribe("edge."+nodeID+".agregar_regla", me.manejarAgregarReglaNATS)
+	nc.Subscribe("edge."+nodeID+".eliminar_regla", me.manejarEliminarReglaNATS)
+	nc.Subscribe("edge."+nodeID+".actualizar_regla", me.manejarActualizarReglaNATS)
+	nc.Subscribe("edge."+nodeID+".listar_reglas", me.manejarListarReglasNATS)
+	nc.Subscribe("edge."+nodeID+".obtener_regla", me.manejarObtenerReglaNATS)
+	nc.Subscribe("edge."+nodeID+".procesar_dato_regla", me.manejarProcesarDatoReglaNATS)
+	nc.Subscribe("edge."+nodeID+".habilitar_motor_reglas", me.manejarHabilitarMotorReglasNATS)
+
+	// Iniciar heartbeat periódico
+	go me.enviarHeartbeat()
+
+	log.Printf("Nodo Edge %s conectado a NATS y servicios iniciados", nodeID)
+	return nil
+}
+
+// enviarHeartbeat envía heartbeats periódicos al despachador
+func (me *ManagerEdge) enviarHeartbeat() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-me.done:
+			return
+		case <-ticker.C:
+			heartbeat := map[string]interface{}{
+				"id":        me.nodeID,
+				"timestamp": time.Now(),
+				"activo":    true,
+			}
+			heartbeatBytes, _ := json.Marshal(heartbeat)
+			me.natsConn.Publish("despachador.heartbeat", heartbeatBytes)
+		}
+	}
+}
+
+// =============================================================================
+// MANEJADORES NATS - SERIES
+// =============================================================================
+
+func (me *ManagerEdge) manejarCrearSerieNATS(m *nats.Msg) {
+	var config Serie
+	err := json.Unmarshal(m.Data, &config)
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error deserializando config: %v", err)))
+		return
+	}
+
+	err = me.CrearSerie(config)
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
+		return
+	}
+
+	m.Respond([]byte("OK"))
+}
+
+func (me *ManagerEdge) manejarObtenerSeriesNATS(m *nats.Msg) {
+	var request map[string]string
+	json.Unmarshal(m.Data, &request)
+
+	serie, err := me.ObtenerSeries(request["serie"])
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
+		return
+	}
+
+	resultado, _ := json.Marshal(serie)
+	m.Respond(resultado)
+}
+
+func (me *ManagerEdge) manejarListarSeriesNATS(m *nats.Msg) {
+	series, err := me.ListarSeries()
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
+		return
+	}
+
+	resultado, _ := json.Marshal(series)
+	m.Respond(resultado)
+}
+
+func (me *ManagerEdge) manejarInsertarNATS(m *nats.Msg) {
+	var request map[string]interface{}
+	json.Unmarshal(m.Data, &request)
+
+	serie := request["serie"].(string)
+	tiempo := int64(request["tiempo"].(float64))
+	dato := request["dato"]
+
+	err := me.Insertar(serie, tiempo, dato)
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
+		return
+	}
+
+	m.Respond([]byte("OK"))
+}
+
+func (me *ManagerEdge) manejarConsultarRangoNATS(m *nats.Msg) {
+	var request map[string]interface{}
+	json.Unmarshal(m.Data, &request)
+
+	serie := request["serie"].(string)
+	inicioStr := request["inicio"].(string)
+	finStr := request["fin"].(string)
+
+	inicio, _ := time.Parse(time.RFC3339, inicioStr)
+	fin, _ := time.Parse(time.RFC3339, finStr)
+
+	resultado, err := me.ConsultarRango(serie, inicio, fin)
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
+		return
+	}
+
+	resultadoBytes, _ := json.Marshal(resultado)
+	m.Respond(resultadoBytes)
+}
+
+func (me *ManagerEdge) manejarConsultarUltimoPuntoNATS(m *nats.Msg) {
+	var request map[string]string
+	json.Unmarshal(m.Data, &request)
+
+	resultado, err := me.ConsultarUltimoPunto(request["serie"])
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
+		return
+	}
+
+	resultadoBytes, _ := json.Marshal(resultado)
+	m.Respond(resultadoBytes)
+}
+
+func (me *ManagerEdge) manejarConsultarPrimerPuntoNATS(m *nats.Msg) {
+	var request map[string]string
+	json.Unmarshal(m.Data, &request)
+
+	resultado, err := me.ConsultarPrimerPunto(request["serie"])
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
+		return
+	}
+
+	resultadoBytes, _ := json.Marshal(resultado)
+	m.Respond(resultadoBytes)
+}
+
+// =============================================================================
+// MANEJADORES NATS - REGLAS
+// =============================================================================
+
+func (me *ManagerEdge) manejarAgregarReglaNATS(m *nats.Msg) {
+	var regla *Regla
+	err := json.Unmarshal(m.Data, &regla)
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error deserializando regla: %v", err)))
+		return
+	}
+
+	err = me.AgregarRegla(regla)
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
+		return
+	}
+
+	m.Respond([]byte("OK"))
+}
+
+func (me *ManagerEdge) manejarEliminarReglaNATS(m *nats.Msg) {
+	var request map[string]string
+	json.Unmarshal(m.Data, &request)
+
+	err := me.EliminarRegla(request["regla_id"])
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
+		return
+	}
+
+	m.Respond([]byte("OK"))
+}
+
+func (me *ManagerEdge) manejarActualizarReglaNATS(m *nats.Msg) {
+	var regla *Regla
+	err := json.Unmarshal(m.Data, &regla)
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error deserializando regla: %v", err)))
+		return
+	}
+
+	err = me.ActualizarRegla(regla)
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
+		return
+	}
+
+	m.Respond([]byte("OK"))
+}
+
+func (me *ManagerEdge) manejarListarReglasNATS(m *nats.Msg) {
+	reglas := me.ListarReglas()
+	resultado, _ := json.Marshal(reglas)
+	m.Respond(resultado)
+}
+
+func (me *ManagerEdge) manejarObtenerReglaNATS(m *nats.Msg) {
+	var request map[string]string
+	json.Unmarshal(m.Data, &request)
+
+	regla, err := me.ObtenerRegla(request["regla_id"])
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
+		return
+	}
+
+	resultado, _ := json.Marshal(regla)
+	m.Respond(resultado)
+}
+
+func (me *ManagerEdge) manejarProcesarDatoReglaNATS(m *nats.Msg) {
+	var request map[string]interface{}
+	json.Unmarshal(m.Data, &request)
+
+	serie := request["serie"].(string)
+	valor := request["valor"].(float64)
+	timestampStr := request["timestamp"].(string)
+	timestamp, _ := time.Parse(time.RFC3339, timestampStr)
+
+	err := me.ProcesarDatoRegla(serie, valor, timestamp)
+	if err != nil {
+		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
+		return
+	}
+
+	m.Respond([]byte("OK"))
+}
+
+func (me *ManagerEdge) manejarHabilitarMotorReglasNATS(m *nats.Msg) {
+	var request map[string]bool
+	json.Unmarshal(m.Data, &request)
+
+	me.HabilitarMotorReglas(request["habilitado"])
+	m.Respond([]byte("OK"))
+}

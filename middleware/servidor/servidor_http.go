@@ -122,6 +122,7 @@ func manejarPublicacionHTTP(w http.ResponseWriter, r *http.Request) {
 		go enviarHTTP(LOG_HTTP, mensaje)
 		go enviarCoAP(LOG_HTTP, mensaje)
 		go enviarMQTT(LOG_HTTP, mensaje)
+		go enviarNATS(LOG_HTTP, mensaje)
 	}
 	// Responder al cliente que envió el POST
 	w.WriteHeader(http.StatusOK)

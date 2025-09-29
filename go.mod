@@ -9,6 +9,7 @@ require (
 	github.com/eclipse/paho.mqtt.golang v1.5.0
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.18.0
+	github.com/nats-io/nats.go v1.31.0
 	github.com/pierrec/lz4/v4 v4.1.22
 	github.com/plgd-dev/go-coap/v3 v3.3.6
 )
@@ -30,6 +31,8 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.2-0.20181231171920-c182affec369 // indirect
+	github.com/nats-io/nkeys v0.4.5 // indirect
+	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/pion/dtls/v3 v3.0.2 // indirect
 	github.com/pion/logging v0.2.2 // indirect
 	github.com/pion/transport/v3 v3.0.7 // indirect

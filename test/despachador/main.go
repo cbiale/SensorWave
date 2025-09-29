@@ -44,12 +44,12 @@ func main() {
 
 	// 3. Registrar nodos en el despachador
 	fmt.Println("3. Registrando nodos en despachador...")
-	err = desp.RegistrarNodo("nodo-edge-1", "localhost:8001", &nodo1)
+	err = desp.RegistrarNodo("nodo-edge-1", "localhost:8001")
 	if err != nil {
 		log.Fatal("Error registrando nodo1:", err)
 	}
 
-	err = desp.RegistrarNodo("nodo-edge-2", "localhost:8002", &nodo2)
+	err = desp.RegistrarNodo("nodo-edge-2", "localhost:8002")
 	if err != nil {
 		log.Fatal("Error registrando nodo2:", err)
 	}

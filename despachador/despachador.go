@@ -3,6 +3,7 @@ package despachador
 import (
 	"bytes"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/cbiale/sensorwave/edge"
 	"github.com/cockroachdb/pebble"
+	"github.com/nats-io/nats.go"
 )
 
 type TipoUbicacion string
@@ -23,9 +25,10 @@ const (
 )
 
 type ManagerDespachador struct {
-	nodos map[string]*NodoEdge
-	db    *pebble.DB
-	mu    sync.RWMutex
+	nodos    map[string]*NodoEdge
+	db       *pebble.DB
+	mu       sync.RWMutex
+	natsConn *nats.Conn
 }
 
 type NodoEdge struct {
@@ -33,7 +36,6 @@ type NodoEdge struct {
 	Direccion string
 	Series    map[string]TipoUbicacion
 	Activo    bool
-	Cliente   *edge.ManagerEdge
 }
 
 type InfoNodo struct {
@@ -101,7 +103,6 @@ func (md *ManagerDespachador) cargarNodosExistentes() error {
 			Direccion: info.Direccion,
 			Series:    info.Series,
 			Activo:    false, // Se marcará como activo cuando se conecte
-			Cliente:   nil,   // Se establecerá cuando se conecte
 		}
 
 		md.nodos[nodeID] = nodo
@@ -139,7 +140,7 @@ func (md *ManagerDespachador) Cerrar() error {
 }
 
 // RegistrarNodo registra un nuevo nodo edge en el despachador
-func (md *ManagerDespachador) RegistrarNodo(id, direccion string, cliente *edge.ManagerEdge) error {
+func (md *ManagerDespachador) RegistrarNodo(id, direccion string) error {
 	md.mu.Lock()
 	defer md.mu.Unlock()
 
@@ -149,7 +150,6 @@ func (md *ManagerDespachador) RegistrarNodo(id, direccion string, cliente *edge.
 		Direccion: direccion,
 		Series:    make(map[string]TipoUbicacion),
 		Activo:    true,
-		Cliente:   cliente,
 	}
 
 	// Guardar en PebbleDB
@@ -365,7 +365,80 @@ func (md *ManagerDespachador) ListarSeriesGlobal() []string {
 }
 
 // =============================================================================
-// FUNCIONES DE CONSULTA DISTRIBUIDAS (PROXY A NODOS EDGE)
+// FUNCIONES NATS
+// =============================================================================
+
+// IniciarNATS inicializa la conexión NATS del despachador
+func (md *ManagerDespachador) IniciarNATS(natsURL string) error {
+	nc, err := nats.Connect(natsURL)
+	if err != nil {
+		return fmt.Errorf("error conectando a NATS: %v", err)
+	}
+	md.natsConn = nc
+
+	// Suscribirse a registros de nodos
+	_, err = nc.Subscribe("despachador.registro", md.manejarRegistroNodo)
+	if err != nil {
+		return fmt.Errorf("error suscribiéndose a despachador.registro: %v", err)
+	}
+
+	// Suscribirse a heartbeats de nodos
+	_, err = nc.Subscribe("despachador.heartbeat", md.manejarHeartbeat)
+	if err != nil {
+		return fmt.Errorf("error suscribiéndose a despachador.heartbeat: %v", err)
+	}
+
+	log.Printf("Despachador conectado a NATS en %s", natsURL)
+	return nil
+}
+
+// manejarRegistroNodo maneja el registro de nuevos nodos edge
+func (md *ManagerDespachador) manejarRegistroNodo(m *nats.Msg) {
+	var registroMsg struct {
+		ID        string    `json:"id"`
+		Direccion string    `json:"direccion"`
+		Timestamp time.Time `json:"timestamp"`
+	}
+
+	err := json.Unmarshal(m.Data, &registroMsg)
+	if err != nil {
+		log.Printf("Error procesando registro de nodo: %v", err)
+		return
+	}
+
+	// Registrar el nodo
+	err = md.RegistrarNodo(registroMsg.ID, registroMsg.Direccion)
+	if err != nil {
+		log.Printf("Error registrando nodo %s: %v", registroMsg.ID, err)
+		return
+	}
+
+	log.Printf("Nodo %s registrado exitosamente via NATS", registroMsg.ID)
+}
+
+// manejarHeartbeat maneja los heartbeats de nodos edge
+func (md *ManagerDespachador) manejarHeartbeat(m *nats.Msg) {
+	var heartbeatMsg struct {
+		ID        string    `json:"id"`
+		Timestamp time.Time `json:"timestamp"`
+		Activo    bool      `json:"activo"`
+	}
+
+	err := json.Unmarshal(m.Data, &heartbeatMsg)
+	if err != nil {
+		log.Printf("Error procesando heartbeat: %v", err)
+		return
+	}
+
+	// Actualizar estado del nodo
+	err = md.ActualizarEstadoNodo(heartbeatMsg.ID, heartbeatMsg.Activo)
+	if err != nil {
+		log.Printf("Error actualizando estado del nodo %s: %v", heartbeatMsg.ID, err)
+	}
+}
+
+// =============================================================================
+// FUNCIONES DE CONSULTA DISTRIBUIDAS (PROXY A NODOS EDGE VIA NATS)
 // =============================================================================
 
 // CrearSerie crea una nueva serie en un nodo específico
@@ -374,13 +447,20 @@ func (md *ManagerDespachador) CrearSerie(nodeID string, config edge.Serie) error
 	defer md.mu.RUnlock()
 
 	nodo, exists := md.nodos[nodeID]
-	if !exists || !nodo.Activo || nodo.Cliente == nil {
+	if !exists || !nodo.Activo {
 		return fmt.Errorf("nodo '%s' no disponible", nodeID)
 	}
 
-	err := nodo.Cliente.CrearSerie(config)
+	// Crear payload para NATS
+	payload, err := json.Marshal(config)
 	if err != nil {
-		return fmt.Errorf("error creando serie en nodo %s: %v", nodeID, err)
+		return fmt.Errorf("error serializando config: %v", err)
+	}
+
+	// Request via NATS
+	_, err = md.natsConn.Request("edge."+nodeID+".crear_serie", payload, time.Second*10)
+	if err != nil {
+		return fmt.Errorf("error creando serie en nodo %s via NATS: %v", nodeID, err)
 	}
 
 	// Asignar serie al nodo como original
@@ -397,11 +477,18 @@ func (md *ManagerDespachador) ObtenerSeries(nombreSerie string) (edge.Serie, err
 		return edge.Serie{}, err
 	}
 
-	if nodo.Cliente == nil {
-		return edge.Serie{}, fmt.Errorf("cliente no disponible para nodo %s", nodo.ID)
+	// Request via NATS
+	payload := map[string]string{"serie": nombreSerie}
+	payloadBytes, _ := json.Marshal(payload)
+
+	msg, err := md.natsConn.Request("edge."+nodo.ID+".obtener_series", payloadBytes, time.Second*10)
+	if err != nil {
+		return edge.Serie{}, fmt.Errorf("error obteniendo serie via NATS: %v", err)
 	}
 
-	return nodo.Cliente.ObtenerSeries(nombreSerie)
+	var resultado edge.Serie
+	err = json.Unmarshal(msg.Data, &resultado)
+	return resultado, err
 }
 
 // ListarSeries lista todas las series desde un nodo específico
@@ -410,11 +497,19 @@ func (md *ManagerDespachador) ListarSeries(nodeID string) ([]string, error) {
 	defer md.mu.RUnlock()
 
 	nodo, exists := md.nodos[nodeID]
-	if !exists || !nodo.Activo || nodo.Cliente == nil {
+	if !exists || !nodo.Activo {
 		return nil, fmt.Errorf("nodo '%s' no disponible", nodeID)
 	}
 
-	return nodo.Cliente.ListarSeries()
+	// Request via NATS
+	msg, err := md.natsConn.Request("edge."+nodeID+".listar_series", []byte("{}"), time.Second*10)
+	if err != nil {
+		return nil, fmt.Errorf("error listando series via NATS: %v", err)
+	}
+
+	var resultado []string
+	err = json.Unmarshal(msg.Data, &resultado)
+	return resultado, err
 }
 
 // Insertar inserta una medición en un nodo específico
@@ -423,11 +518,28 @@ func (md *ManagerDespachador) Insertar(nodeID, nombreSerie string, tiempo int64,
 	defer md.mu.RUnlock()
 
 	nodo, exists := md.nodos[nodeID]
-	if !exists || !nodo.Activo || nodo.Cliente == nil {
+	if !exists || !nodo.Activo {
 		return fmt.Errorf("nodo '%s' no disponible", nodeID)
 	}
 
-	return nodo.Cliente.Insertar(nombreSerie, tiempo, dato)
+	// Crear payload para NATS
+	payload := map[string]interface{}{
+		"serie":  nombreSerie,
+		"tiempo": tiempo,
+		"dato":   dato,
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("error serializando payload: %v", err)
+	}
+
+	// Request via NATS
+	_, err = md.natsConn.Request("edge."+nodeID+".insertar", payloadBytes, time.Second*10)
+	if err != nil {
+		return fmt.Errorf("error insertando via NATS: %v", err)
+	}
+
+	return nil
 }
 
 // ConsultarRango consulta un rango de tiempo desde el mejor nodo disponible
@@ -440,11 +552,26 @@ func (md *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, t
 		return nil, err
 	}
 
-	if nodo.Cliente == nil {
-		return nil, fmt.Errorf("cliente no disponible para nodo %s", nodo.ID)
+	// Crear payload para NATS
+	payload := map[string]interface{}{
+		"serie":  nombreSerie,
+		"inicio": tiempoInicio,
+		"fin":    tiempoFin,
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("error serializando payload: %v", err)
 	}
 
-	return nodo.Cliente.ConsultarRango(nombreSerie, tiempoInicio, tiempoFin)
+	// Request via NATS
+	msg, err := md.natsConn.Request("edge."+nodo.ID+".consultar_rango", payloadBytes, time.Second*10)
+	if err != nil {
+		return nil, fmt.Errorf("error consultando rango via NATS: %v", err)
+	}
+
+	var resultado []edge.Medicion
+	err = json.Unmarshal(msg.Data, &resultado)
+	return resultado, err
 }
 
 // ConsultarUltimoPunto obtiene último punto desde el mejor nodo
@@ -457,11 +584,18 @@ func (md *ManagerDespachador) ConsultarUltimoPunto(nombreSerie string) (edge.Med
 		return edge.Medicion{}, err
 	}
 
-	if nodo.Cliente == nil {
-		return edge.Medicion{}, fmt.Errorf("cliente no disponible para nodo %s", nodo.ID)
+	// Request via NATS
+	payload := map[string]string{"serie": nombreSerie}
+	payloadBytes, _ := json.Marshal(payload)
+
+	msg, err := md.natsConn.Request("edge."+nodo.ID+".consultar_ultimo_punto", payloadBytes, time.Second*10)
+	if err != nil {
+		return edge.Medicion{}, fmt.Errorf("error consultando último punto via NATS: %v", err)
 	}
 
-	return nodo.Cliente.ConsultarUltimoPunto(nombreSerie)
+	var resultado edge.Medicion
+	err = json.Unmarshal(msg.Data, &resultado)
+	return resultado, err
 }
 
 // ConsultarPrimerPunto obtiene primer punto desde el mejor nodo
@@ -474,15 +608,22 @@ func (md *ManagerDespachador) ConsultarPrimerPunto(nombreSerie string) (edge.Med
 		return edge.Medicion{}, err
 	}
 
-	if nodo.Cliente == nil {
-		return edge.Medicion{}, fmt.Errorf("cliente no disponible para nodo %s", nodo.ID)
+	// Request via NATS
+	payload := map[string]string{"serie": nombreSerie}
+	payloadBytes, _ := json.Marshal(payload)
+
+	msg, err := md.natsConn.Request("edge."+nodo.ID+".consultar_primer_punto", payloadBytes, time.Second*10)
+	if err != nil {
+		return edge.Medicion{}, fmt.Errorf("error consultando primer punto via NATS: %v", err)
 	}
 
-	return nodo.Cliente.ConsultarPrimerPunto(nombreSerie)
+	var resultado edge.Medicion
+	err = json.Unmarshal(msg.Data, &resultado)
+	return resultado, err
 }
 
 // =============================================================================
-// FUNCIONES DE REGLAS DISTRIBUIDAS (PROXY A NODOS EDGE)
+// FUNCIONES DE REGLAS DISTRIBUIDAS (PROXY A NODOS EDGE VIA NATS)
 // =============================================================================
 
 // AgregarRegla agrega una regla a un nodo específico
@@ -491,11 +632,23 @@ func (md *ManagerDespachador) AgregarRegla(nodeID string, regla *edge.Regla) err
 	defer md.mu.RUnlock()
 
 	nodo, exists := md.nodos[nodeID]
-	if !exists || !nodo.Activo || nodo.Cliente == nil {
+	if !exists || !nodo.Activo {
 		return fmt.Errorf("nodo '%s' no disponible", nodeID)
 	}
 
-	return nodo.Cliente.AgregarRegla(regla)
+	// Crear payload para NATS
+	payload, err := json.Marshal(regla)
+	if err != nil {
+		return fmt.Errorf("error serializando regla: %v", err)
+	}
+
+	// Request via NATS
+	_, err = md.natsConn.Request("edge."+nodeID+".agregar_regla", payload, time.Second*10)
+	if err != nil {
+		return fmt.Errorf("error agregando regla via NATS: %v", err)
+	}
+
+	return nil
 }
 
 // EliminarRegla elimina una regla de un nodo específico
@@ -504,11 +657,21 @@ func (md *ManagerDespachador) EliminarRegla(nodeID, reglaID string) error {
 	defer md.mu.RUnlock()
 
 	nodo, exists := md.nodos[nodeID]
-	if !exists || !nodo.Activo || nodo.Cliente == nil {
+	if !exists || !nodo.Activo {
 		return fmt.Errorf("nodo '%s' no disponible", nodeID)
 	}
 
-	return nodo.Cliente.EliminarRegla(reglaID)
+	// Crear payload para NATS
+	payload := map[string]string{"regla_id": reglaID}
+	payloadBytes, _ := json.Marshal(payload)
+
+	// Request via NATS
+	_, err := md.natsConn.Request("edge."+nodeID+".eliminar_regla", payloadBytes, time.Second*10)
+	if err != nil {
+		return fmt.Errorf("error eliminando regla via NATS: %v", err)
+	}
+
+	return nil
 }
 
 // ActualizarRegla actualiza una regla en un nodo específico
@@ -517,11 +680,23 @@ func (md *ManagerDespachador) ActualizarRegla(nodeID string, regla *edge.Regla) 
 	defer md.mu.RUnlock()
 
 	nodo, exists := md.nodos[nodeID]
-	if !exists || !nodo.Activo || nodo.Cliente == nil {
+	if !exists || !nodo.Activo {
 		return fmt.Errorf("nodo '%s' no disponible", nodeID)
 	}
 
-	return nodo.Cliente.ActualizarRegla(regla)
+	// Crear payload para NATS
+	payload, err := json.Marshal(regla)
+	if err != nil {
+		return fmt.Errorf("error serializando regla: %v", err)
+	}
+
+	// Request via NATS
+	_, err = md.natsConn.Request("edge."+nodeID+".actualizar_regla", payload, time.Second*10)
+	if err != nil {
+		return fmt.Errorf("error actualizando regla via NATS: %v", err)
+	}
+
+	return nil
 }
 
 // ListarReglas lista reglas de un nodo específico
@@ -530,11 +705,19 @@ func (md *ManagerDespachador) ListarReglas(nodeID string) (map[string]*edge.Regl
 	defer md.mu.RUnlock()
 
 	nodo, exists := md.nodos[nodeID]
-	if !exists || !nodo.Activo || nodo.Cliente == nil {
+	if !exists || !nodo.Activo {
 		return nil, fmt.Errorf("nodo '%s' no disponible", nodeID)
 	}
 
-	return nodo.Cliente.ListarReglas(), nil
+	// Request via NATS
+	msg, err := md.natsConn.Request("edge."+nodeID+".listar_reglas", []byte("{}"), time.Second*10)
+	if err != nil {
+		return nil, fmt.Errorf("error listando reglas via NATS: %v", err)
+	}
+
+	var resultado map[string]*edge.Regla
+	err = json.Unmarshal(msg.Data, &resultado)
+	return resultado, err
 }
 
 // ObtenerRegla obtiene una regla específica de un nodo
@@ -543,11 +726,23 @@ func (md *ManagerDespachador) ObtenerRegla(nodeID, reglaID string) (*edge.Regla,
 	defer md.mu.RUnlock()
 
 	nodo, exists := md.nodos[nodeID]
-	if !exists || !nodo.Activo || nodo.Cliente == nil {
+	if !exists || !nodo.Activo {
 		return nil, fmt.Errorf("nodo '%s' no disponible", nodeID)
 	}
 
-	return nodo.Cliente.ObtenerRegla(reglaID)
+	// Crear payload para NATS
+	payload := map[string]string{"regla_id": reglaID}
+	payloadBytes, _ := json.Marshal(payload)
+
+	// Request via NATS
+	msg, err := md.natsConn.Request("edge."+nodeID+".obtener_regla", payloadBytes, time.Second*10)
+	if err != nil {
+		return nil, fmt.Errorf("error obteniendo regla via NATS: %v", err)
+	}
+
+	var resultado *edge.Regla
+	err = json.Unmarshal(msg.Data, &resultado)
+	return resultado, err
 }
 
 // ProcesarDatoRegla procesa un dato según reglas en un nodo específico
@@ -556,24 +751,44 @@ func (md *ManagerDespachador) ProcesarDatoRegla(nodeID, serie string, valor floa
 	defer md.mu.RUnlock()
 
 	nodo, exists := md.nodos[nodeID]
-	if !exists || !nodo.Activo || nodo.Cliente == nil {
+	if !exists || !nodo.Activo {
 		return fmt.Errorf("nodo '%s' no disponible", nodeID)
 	}
 
-	return nodo.Cliente.ProcesarDatoRegla(serie, valor, timestamp)
+	// Crear payload para NATS
+	payload := map[string]interface{}{
+		"serie":     serie,
+		"valor":     valor,
+		"timestamp": timestamp,
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("error serializando payload: %v", err)
+	}
+
+	// Request via NATS
+	_, err = md.natsConn.Request("edge."+nodeID+".procesar_dato_regla", payloadBytes, time.Second*10)
+	if err != nil {
+		return fmt.Errorf("error procesando dato regla via NATS: %v", err)
+	}
+
+	return nil
 }
 
 // RegistrarEjecutor registra un ejecutor de acciones en un nodo específico
+// NOTA: Esta función requiere callback, no es compatible con NATS directamente
 func (md *ManagerDespachador) RegistrarEjecutor(nodeID, tipoAccion string, ejecutor edge.EjecutorAccion) error {
 	md.mu.RLock()
 	defer md.mu.RUnlock()
 
 	nodo, exists := md.nodos[nodeID]
-	if !exists || !nodo.Activo || nodo.Cliente == nil {
+	if !exists || !nodo.Activo {
 		return fmt.Errorf("nodo '%s' no disponible", nodeID)
 	}
 
-	return nodo.Cliente.RegistrarEjecutor(tipoAccion, ejecutor)
+	// Esta función requiere un callback, no es compatible con NATS directamente
+	// Se podría implementar un patrón de registro diferente si es necesario
+	return fmt.Errorf("RegistrarEjecutor no soportado via NATS (requiere callback)")
 }
 
 // HabilitarMotorReglas habilita/deshabilita motor de reglas en un nodo
@@ -582,11 +797,19 @@ func (md *ManagerDespachador) HabilitarMotorReglas(nodeID string, habilitado boo
 	defer md.mu.RUnlock()
 
 	nodo, exists := md.nodos[nodeID]
-	if !exists || !nodo.Activo || nodo.Cliente == nil {
+	if !exists || !nodo.Activo {
 		return fmt.Errorf("nodo '%s' no disponible", nodeID)
 	}
 
-	nodo.Cliente.HabilitarMotorReglas(habilitado)
+	// Crear payload para NATS
+	payload := map[string]bool{"habilitado": habilitado}
+	payloadBytes, _ := json.Marshal(payload)
+
+	// Request via NATS
+	_, err := md.natsConn.Request("edge."+nodeID+".habilitar_motor_reglas", payloadBytes, time.Second*10)
+	if err != nil {
+		return fmt.Errorf("error habilitando motor reglas via NATS: %v", err)
+	}
+
 	return nil
 }
-

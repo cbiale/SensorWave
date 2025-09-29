@@ -18,26 +18,26 @@ const LOG_COAP = "COAP"
 // datos de las conexiones de los observadores
 type Conexion struct {
 	conexion mux.Conn
-	context context.Context
-	token []byte
+	context  context.Context
+	token    []byte
 }
 
 // Almacena observadores por ruta
 var (
-	valor atomic.Int64          	             // valor de observación
-	observadores = make(map[string][]Conexion)   // conexiones CoAP
-	mutexCoAP      sync.Mutex                    // Mutex para proteger el acceso a `clientesPorTopico`
+	valor        atomic.Int64                  // valor de observación
+	observadores = make(map[string][]Conexion) // conexiones CoAP
+	mutexCoAP    sync.Mutex                    // Mutex para proteger el acceso a `clientesPorTopico`
 )
 
 // Iniciar el servidor CoAP
-func IniciarCoAP (puerto string) {
+func IniciarCoAP(puerto string) {
 	r := mux.NewRouter()
 	// Manejador para cualquier ruta
 	r.DefaultHandle(mux.HandlerFunc(manejadorCoAP))
 
 	// Iniciar el servidor en el puerto especificado
-	loggerPrint(LOG_COAP, "Iniciando servidor CoAP en :" + puerto)
-	err := coap.ListenAndServe("udp", ":" + puerto, r)
+	loggerPrint(LOG_COAP, "Iniciando servidor CoAP en :"+puerto)
+	err := coap.ListenAndServe("udp", ":"+puerto, r)
 	if err != nil {
 		loggerFatal(LOG_COAP, "Error al iniciar el servidor: %v", err)
 	}
@@ -59,40 +59,40 @@ func manejadorCoAP(w mux.ResponseWriter, r *mux.Message) {
 
 	// Responder según el método
 	switch {
-		// suscribirse
-		case metodo == codes.GET && err == nil && obs == 0:
-			manejarSuscripcionCoAP(w, r, ruta)
-		// desuscribirse
-		case metodo == codes.GET && err == nil && obs != 0:
-			eliminarSuscripcionCoAP(w, r, ruta)
-		// publicar
-		case metodo == codes.POST:
-			// Obtener la carga útil de la solicitud, si hay alguna
-			var mensaje Mensaje
-			cuerpo, err := r.Message.ReadBody()
-			if err != nil {
-				loggerPrint(LOG_COAP, "Error al procesar el cuerpo de la solicitud: "+ err.Error())
-				return
-			}
+	// suscribirse
+	case metodo == codes.GET && err == nil && obs == 0:
+		manejarSuscripcionCoAP(w, r, ruta)
+	// desuscribirse
+	case metodo == codes.GET && err == nil && obs != 0:
+		eliminarSuscripcionCoAP(w, r, ruta)
+	// publicar
+	case metodo == codes.POST:
+		// Obtener la carga útil de la solicitud, si hay alguna
+		var mensaje Mensaje
+		cuerpo, err := r.Message.ReadBody()
+		if err != nil {
+			loggerPrint(LOG_COAP, "Error al procesar el cuerpo de la solicitud: "+err.Error())
+			return
+		}
 
-			err = json.Unmarshal(cuerpo, &mensaje)
-			if err != nil {
-				loggerPrint(LOG_COAP, "Error al convertir el cuerpo de la solicitud: "+ err.Error())
-				return
-			}
-			loggerPrint(LOG_COAP, "Cuerpo convertido a Mensaje: %+v", mensaje)
-			manejarPublicacionCoAP(w, r, ruta, mensaje)
-		default:
-			loggerPrint(LOG_COAP, "Método no soportado: %v", metodo)
-			err := w.SetResponse(codes.MethodNotAllowed, message.TextPlain,  bytes.NewReader([]byte("Método no soportado")))
-			if err != nil {
-				loggerPrint(LOG_COAP, "Error al enviar respuesta: %v", err)
-			}
+		err = json.Unmarshal(cuerpo, &mensaje)
+		if err != nil {
+			loggerPrint(LOG_COAP, "Error al convertir el cuerpo de la solicitud: "+err.Error())
+			return
+		}
+		loggerPrint(LOG_COAP, "Cuerpo convertido a Mensaje: %+v", mensaje)
+		manejarPublicacionCoAP(w, r, ruta, mensaje)
+	default:
+		loggerPrint(LOG_COAP, "Método no soportado: %v", metodo)
+		err := w.SetResponse(codes.MethodNotAllowed, message.TextPlain, bytes.NewReader([]byte("Método no soportado")))
+		if err != nil {
+			loggerPrint(LOG_COAP, "Error al enviar respuesta: %v", err)
+		}
 	}
 }
 
 // manejarSuscripcionCoAP maneja las solicitudes GET con observe
-func manejarSuscripcionCoAP (w mux.ResponseWriter, r *mux.Message, topico string) {
+func manejarSuscripcionCoAP(w mux.ResponseWriter, r *mux.Message, topico string) {
 
 	// agrego observadores
 	loggerPrint(LOG_COAP, "Agregando observador")
@@ -103,19 +103,19 @@ func manejarSuscripcionCoAP (w mux.ResponseWriter, r *mux.Message, topico string
 	mutexCoAP.Unlock()
 
 	// enviar respuesta
-	err :=  enviarRespuesta(w.Conn(), r.Token(), Mensaje{Interno: true}, valor.Add(1))
+	err := enviarRespuesta(w.Conn(), r.Token(), Mensaje{Interno: true}, valor.Add(1))
 	if err != nil {
 		loggerPrint(LOG_COAP, "Error en transmitir: %v", err)
 	}
 }
 
 // manejarPublicacionCoAP envía una publicación a los observadores de una ruta
-func manejarPublicacionCoAP (w mux.ResponseWriter, r *mux.Message, ruta string, payload Mensaje) {
+func manejarPublicacionCoAP(w mux.ResponseWriter, r *mux.Message, ruta string, payload Mensaje) {
 
-	err := w.SetResponse(codes.Created, message.TextPlain,  nil)
+	err := w.SetResponse(codes.Created, message.TextPlain, nil)
 	if err != nil {
 		loggerPrint(LOG_COAP, "Error al enviar respuesta: %v", err)
-	}		
+	}
 
 	// enviar publicaciones a los protocolos
 	if payload.Original {
@@ -123,10 +123,11 @@ func manejarPublicacionCoAP (w mux.ResponseWriter, r *mux.Message, ruta string, 
 		go enviarCoAP(LOG_COAP, payload)
 		go enviarHTTP(LOG_COAP, payload)
 		go enviarMQTT(LOG_COAP, payload)
+		go enviarNATS(LOG_COAP, payload)
 	}
 }
 
-func eliminarSuscripcionCoAP (w mux.ResponseWriter, r *mux.Message, ruta string) {
+func eliminarSuscripcionCoAP(w mux.ResponseWriter, r *mux.Message, ruta string) {
 	err := enviarRespuesta(w.Conn(), r.Token(), Mensaje{Interno: true}, -1)
 	if err != nil {
 		loggerPrint(LOG_COAP, "Error al enviar respuesta: %v", err)

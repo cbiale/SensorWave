@@ -53,5 +53,6 @@ func manejadorMQTT(cliente MQTT.Client, mensajeMQTT MQTT.Message) {
 		mensaje.Original = false
 		go enviarCoAP(LOG_MQTT, mensaje)
 		go enviarHTTP(LOG_MQTT, mensaje)
+		go enviarNATS(LOG_MQTT, mensaje)
 	}
 }

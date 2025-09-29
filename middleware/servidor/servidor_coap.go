@@ -74,11 +74,13 @@ func manejadorCoAP(w mux.ResponseWriter, r *mux.Message) {
 				loggerPrint(LOG_COAP, "Error al procesar el cuerpo de la solicitud: "+ err.Error())
 				return
 			}
+
 			err = json.Unmarshal(cuerpo, &mensaje)
 			if err != nil {
 				loggerPrint(LOG_COAP, "Error al convertir el cuerpo de la solicitud: "+ err.Error())
 				return
 			}
+			loggerPrint(LOG_COAP, "Cuerpo convertido a Mensaje: %+v", mensaje)
 			manejarPublicacionCoAP(w, r, ruta, mensaje)
 		default:
 			loggerPrint(LOG_COAP, "Método no soportado: %v", metodo)
@@ -97,6 +99,7 @@ func manejarSuscripcionCoAP (w mux.ResponseWriter, r *mux.Message, topico string
 	mutexCoAP.Lock()
 	datosConexion := Conexion{w.Conn(), r.Context(), r.Token()}
 	observadores[topico] = append(observadores[topico], datosConexion)
+	loggerPrint(LOG_COAP, "Agregando Observador en topico %v", topico)
 	mutexCoAP.Unlock()
 
 	// enviar respuesta

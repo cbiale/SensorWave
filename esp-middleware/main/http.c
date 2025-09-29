@@ -1,225 +1,409 @@
-#include <esp_http_client.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-
-#include "middleware.h"
-#include "esp_log.h"
+#include "http.h"
 #include "sys/queue.h"
+#include "esp_log.h"
+#include "esp_http_client.h"
+#include "cJSON.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
 
-#define TAG "HTTP"                   // Tag del log
-#define SSE_REINTENTOS_DELAY_MS 3000 // intentos para reconectarse usando SSE
+// Tag del log
+#define TAG "HTTP"
 
-// estructura de callbacks
-typedef struct sse_sub {
+// Ruta del endpoint
+#define HTTP_RUTA "/sensorwave"
+
+// Cliente HTTP
+static esp_http_client_handle_t cliente = NULL;
+static char base_url[256] = {0};
+
+// Estado de conexión HTTP
+static bool http_conectado = false;
+
+// Mutex para sincronización
+static SemaphoreHandle_t http_mutex = NULL;
+
+// Estructura para suscripciones HTTP
+typedef struct http_sub {
     char *topico;
-    callback_t cb;
-    TaskHandle_t tarea;
-    STAILQ_ENTRY(sse_sub) entradas;
-} sse_sub_t;
+    callback_t callback;
+    TaskHandle_t task_handle;
+    bool activo;
+    STAILQ_ENTRY(http_sub) entradas;
+} http_sub_t;
 
-// Define la cabeza de la lista
-STAILQ_HEAD(sse_lista_t, sse_sub);
-static struct sse_lista_t sse_lista;
+// Lista de suscripciones
+STAILQ_HEAD(http_sub_lista_t, http_sub);
+static struct http_sub_lista_t lista_subs;
 
-char ruta[] = "/sensorwave";  // ruta del cliente HTTP
-char servidor_base[512];      // URL del servidor HTTP
-
-// función de manejo de eventos SSE
-void sse_task(void *parametros) {
- 
-    sse_sub_t *sub = (sse_sub_t *)parametros;
-    char url[1024];
-    snprintf(url, sizeof(url), "%s/%s", servidor_base, sub->topico);
-
-    while (true) {
-        // configura el cliente HTTP
-        esp_http_client_config_t config = {
-            .url = url,
-            .method = HTTP_METHOD_GET,
-            .disable_auto_redirect = true,
-        };
-
-        // inicializa el cliente HTTP
-        esp_http_client_handle_t cliente = esp_http_client_init(&config);
-        if (!cliente) {
-            ESP_LOGE(TAG, "No se pudo inicializar cliente HTTP");
-            vTaskDelay(pdMS_TO_TICKS(SSE_REINTENTOS_DELAY_MS));
-            continue;
-        }
-
-        // configura el manejador de eventos
-        esp_err_t err = esp_http_client_open(cliente, 0);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "Fallo al conectar SSE: %s", esp_err_to_name(err));
-            // libera el cliente HTTP
-            esp_http_client_cleanup(cliente);
-            vTaskDelay(pdMS_TO_TICKS(SSE_REINTENTOS_DELAY_MS));
-            continue;
-        }
-
-        ESP_LOGI(TAG, "Conectado a SSE %s", url);
-
-        char buffer[512];
-        int len;
-
-        // lee el flujo SSE
-        while ((len = esp_http_client_read(cliente, buffer, sizeof(buffer) - 1)) > 0) {
-            buffer[len] = '\0';
-
-            if (strncmp(buffer, "data:", 5) == 0) {
-                char *payload = buffer + 5;
-                while (*payload == ' ') payload++;  // trim leading space
-                ESP_LOGI(TAG, "Evento recibido: %s", payload);
-                sub->cb(sub->topico, payload);
-            }
-        }
-
-        // manejo de errores
-        ESP_LOGW(TAG, "SSE desconectado, reintentando en %d ms", SSE_REINTENTOS_DELAY_MS);
-        esp_http_client_cleanup(cliente);
-        vTaskDelay(pdMS_TO_TICKS(SSE_REINTENTOS_DELAY_MS));
-    }
+// Función para crear mensaje JSON
+static char* crear_mensaje_json(const char *topico, const char *payload) {
+    cJSON *json = cJSON_CreateObject();
+    cJSON *original = cJSON_CreateBool(true);
+    cJSON *topico_json = cJSON_CreateString(topico);
+    cJSON *payload_json = cJSON_CreateString(payload);
+    cJSON *interno = cJSON_CreateBool(false);
+    
+    cJSON_AddItemToObject(json, "original", original);
+    cJSON_AddItemToObject(json, "topico", topico_json);
+    cJSON_AddItemToObject(json, "payload", payload_json);
+    cJSON_AddItemToObject(json, "interno", interno);
+    
+    char *json_string = cJSON_Print(json);
+    cJSON_Delete(json);
+    
+    return json_string;
 }
 
+// Callback para respuestas HTTP
+static esp_err_t http_event_handler(esp_http_client_event_t *evt) {
+    switch (evt->event_id) {
+        case HTTP_EVENT_ERROR:
+            ESP_LOGE(TAG, "Error HTTP");
+            break;
+        case HTTP_EVENT_ON_CONNECTED:
+            ESP_LOGI(TAG, "Cliente HTTP conectado");
+            break;
+        case HTTP_EVENT_HEADER_SENT:
+            ESP_LOGD(TAG, "Headers enviados");
+            break;
+        case HTTP_EVENT_ON_HEADER:
+            ESP_LOGD(TAG, "Header recibido: %s: %s", evt->header_key, evt->header_value);
+            break;
+        case HTTP_EVENT_ON_DATA:
+            ESP_LOGD(TAG, "Datos recibidos: %.*s", evt->data_len, (char*)evt->data);
+            break;
+        case HTTP_EVENT_ON_FINISH:
+            ESP_LOGD(TAG, "Petición HTTP finalizada");
+            break;
+        case HTTP_EVENT_DISCONNECTED:
+            ESP_LOGI(TAG, "Cliente HTTP desconectado");
+            break;
+        case HTTP_EVENT_REDIRECT:
+            ESP_LOGI(TAG, "Redirección HTTP");
+            break;
+    }
+    return ESP_OK;
+}
+
+// Tarea para manejar suscripciones SSE
+static void http_sse_task(void *pvParameters) {
+    http_sub_t *sub = (http_sub_t*)pvParameters;
+    
+    char url[512];
+    snprintf(url, sizeof(url), "%s%s?topico=%s", base_url, HTTP_RUTA, sub->topico);
+    
+    esp_http_client_config_t config = {
+        .url = url,
+        .event_handler = http_event_handler,
+        .timeout_ms = 5000,
+    };
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    
+    if (client == NULL) {
+        ESP_LOGE(TAG, "Error al inicializar cliente HTTP para SSE");
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    esp_http_client_set_method(client, HTTP_METHOD_GET);
+    esp_http_client_set_header(client, "Accept", "text/event-stream");
+    esp_http_client_set_header(client, "Cache-Control", "no-cache");
+    
+    ESP_LOGI(TAG, "Iniciando conexión SSE para tópico: %s", sub->topico);
+    
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Error al abrir conexión SSE: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    char buffer[1024];
+    while (sub->activo) {
+        int data_read = esp_http_client_read(client, buffer, sizeof(buffer) - 1);
+        if (data_read > 0) {
+            buffer[data_read] = '\0';
+            
+            // Procesar SSE
+            char *line = strtok(buffer, "\n");
+            while (line != NULL && sub->activo) {
+                if (strncmp(line, "data: ", 6) == 0) {
+                    char *data = line + 6;
+                    // Eliminar \r si existe
+                    char *cr = strchr(data, '\r');
+                    if (cr) *cr = '\0';
+                    
+                    if (sub->callback) {
+                        sub->callback(sub->topico, data);
+                    }
+                }
+                line = strtok(NULL, "\n");
+            }
+        } else if (data_read == 0) {
+            // Conexión cerrada
+            ESP_LOGI(TAG, "Conexión SSE cerrada para tópico: %s", sub->topico);
+            break;
+        } else {
+            ESP_LOGE(TAG, "Error al leer datos SSE: %d", data_read);
+            break;
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    ESP_LOGI(TAG, "Tarea SSE terminada para tópico: %s", sub->topico);
+    vTaskDelete(NULL);
+}
 
 // Inicializa y conecta al servidor HTTP
 void http_conectar(const char *host, int puerto) {
-    // armado de la URI (no se necesita configurar el cliente en ESP-IDF)
-    snprintf(servidor_base, sizeof(servidor_base), "http://%s:%d", host, puerto);
-
-    // inicializa la lista de suscripciones
-    STAILQ_INIT(&sse_lista);
-
-    ESP_LOGI(TAG, "Servidor HTTP configurado en %s", servidor_base);
+    // Crea el mutex si no existe
+    if (http_mutex == NULL) {
+        http_mutex = xSemaphoreCreateMutex();
+        if (http_mutex == NULL) {
+            ESP_LOGE(TAG, "Error al crear mutex HTTP");
+            return;
+        }
+    }
+    
+    // Inicializa la lista de suscripciones
+    STAILQ_INIT(&lista_subs);
+    
+    // Construye la URL base
+    snprintf(base_url, sizeof(base_url), "http://%s:%d", host, puerto);
+    
+    // Configuración del cliente HTTP
+    esp_http_client_config_t config = {
+        .url = base_url,
+        .event_handler = http_event_handler,
+        .timeout_ms = 5000,
+    };
+    
+    cliente = esp_http_client_init(&config);
+    if (cliente == NULL) {
+        ESP_LOGE(TAG, "Error al inicializar cliente HTTP");
+        return;
+    }
+    
+    if (xSemaphoreTake(http_mutex, portMAX_DELAY) == pdTRUE) {
+        http_conectado = true;
+        xSemaphoreGive(http_mutex);
+    }
+    
+    ESP_LOGI(TAG, "Cliente HTTP conectado a %s:%d", host, puerto);
 }
 
 // Suscribe a un tópico con un callback asociado
 void http_suscribir(const char *topico, callback_t cb) {
-    // verifica si el cliente está conectado
-    if (servidor_base[0] == '\0') {
-        ESP_LOGE(TAG, "No hay cliente HTTP conectado\n");
+    if (cliente == NULL) {
+        ESP_LOGE(TAG, "No hay cliente HTTP inicializado");
         return;
     }
-
-    // verifica si el tópico es válido
-    if (strlen(topico) >= 128) {
-        ESP_LOGE(TAG, "Tópico demasiado largo\n");
+    
+    bool conectado = false;
+    if (xSemaphoreTake(http_mutex, portMAX_DELAY) == pdTRUE) {
+        conectado = http_conectado;
+        xSemaphoreGive(http_mutex);
+    }
+    
+    if (!conectado) {
+        ESP_LOGE(TAG, "Cliente HTTP no conectado");
         return;
     }
-
-    sse_sub_t *nueva = malloc(sizeof(sse_sub_t));
-    nueva->topico = strdup(topico);
-    nueva->cb = cb;
-
-    // lanzar tarea y guardar handle
-    xTaskCreate(sse_task, "sse_task", 4096, nueva, 5, &nueva->tarea);
-
-    // insertar al final de la lista
-    STAILQ_INSERT_TAIL(&sse_lista, nueva, entradas);
+    
+    // Verificar si ya existe la suscripción
+    if (xSemaphoreTake(http_mutex, portMAX_DELAY) == pdTRUE) {
+        http_sub_t *actual;
+        STAILQ_FOREACH(actual, &lista_subs, entradas) {
+            if (strcmp(actual->topico, topico) == 0) {
+                actual->callback = cb;
+                xSemaphoreGive(http_mutex);
+                ESP_LOGI(TAG, "Callback actualizado para el tópico %s", topico);
+                return;
+            }
+        }
+        xSemaphoreGive(http_mutex);
+    }
+    
+    // Crear nueva suscripción
+    http_sub_t *nuevo = malloc(sizeof(http_sub_t));
+    if (nuevo == NULL) {
+        ESP_LOGE(TAG, "Error al asignar memoria para suscripción");
+        return;
+    }
+    
+    nuevo->topico = strdup(topico);
+    if (nuevo->topico == NULL) {
+        ESP_LOGE(TAG, "Error al asignar memoria para tópico");
+        free(nuevo);
+        return;
+    }
+    
+    nuevo->callback = cb;
+    nuevo->activo = true;
+    
+    // Crear tarea SSE
+    BaseType_t result = xTaskCreate(http_sse_task, "http_sse", 4096, nuevo, 5, &nuevo->task_handle);
+    if (result != pdPASS) {
+        ESP_LOGE(TAG, "Error al crear tarea SSE");
+        free(nuevo->topico);
+        free(nuevo);
+        return;
+    }
+    
+    if (xSemaphoreTake(http_mutex, portMAX_DELAY) == pdTRUE) {
+        STAILQ_INSERT_TAIL(&lista_subs, nuevo, entradas);
+        xSemaphoreGive(http_mutex);
+    }
+    
+    ESP_LOGI(TAG, "Suscrito al tópico %s", topico);
 }
 
 // Publica un mensaje en un tópico
 void http_publicar(const char *topico, const char *mensaje) {
-    // verifica si el cliente está conectado
-    if (servidor_base[0] == '\0') {
-        ESP_LOGE(TAG, "No hay cliente HTTP conectado\n");
+    if (cliente == NULL) {
+        ESP_LOGE(TAG, "No hay cliente HTTP inicializado");
         return;
     }
-    // verifica si el mensaje es válido
-    if (strlen(mensaje) >= 512) {
-        ESP_LOGE(TAG, "Mensaje demasiado largo\n");
+    
+    bool conectado = false;
+    if (xSemaphoreTake(http_mutex, portMAX_DELAY) == pdTRUE) {
+        conectado = http_conectado;
+        xSemaphoreGive(http_mutex);
+    }
+    
+    if (!conectado) {
+        ESP_LOGE(TAG, "Cliente HTTP no conectado");
         return;
     }
-    // verifica si el tópico es válido
-    if (strlen(topico) >= 128) {
-        ESP_LOGE(TAG, "Tópico demasiado largo\n");
+    
+    // Crear JSON del mensaje
+    char *json_data = crear_mensaje_json(topico, mensaje);
+    if (json_data == NULL) {
+        ESP_LOGE(TAG, "Error al crear JSON del mensaje");
         return;
     }
-    // enviar un POST al servidor
-    char url[1024];
-    snprintf(url, sizeof(url), "%s/%s", servidor_base, topico);
-    esp_http_client_config_t config = {
-        .url = url,
-        .method = HTTP_METHOD_POST,
-        .data = mensaje,
-        .data_len = strlen(mensaje),
-        .disable_auto_redirect = true,
-    };
-    // inicializa el cliente HTTP
-    esp_http_client_handle_t cliente = esp_http_client_init(&config);
-    if (!cliente) {
-        ESP_LOGE(TAG, "No se pudo inicializar cliente HTTP");
-        return;
-    }
-    // configura el manejador de eventos
+    
+    // Configurar URL completa
+    char url[512];
+    snprintf(url, sizeof(url), "%s%s", base_url, HTTP_RUTA);
+    
+    esp_http_client_set_url(cliente, url);
+    esp_http_client_set_method(cliente, HTTP_METHOD_POST);
+    esp_http_client_set_header(cliente, "Content-Type", "application/json");
+    esp_http_client_set_post_field(cliente, json_data, strlen(json_data));
+    
     esp_err_t err = esp_http_client_perform(cliente);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Error al publicar en el tópico %s: %s", topico, esp_err_to_name(err));
+    if (err == ESP_OK) {
+        int status_code = esp_http_client_get_status_code(cliente);
+        if (status_code == 200) {
+            ESP_LOGI(TAG, "Mensaje publicado en el tópico %s", topico);
+        } else {
+            ESP_LOGE(TAG, "Error HTTP: %d", status_code);
+        }
     } else {
-        ESP_LOGI(TAG, "Mensaje publicado en el tópico %s: %s", topico, mensaje);
+        ESP_LOGE(TAG, "Error al realizar POST: %s", esp_err_to_name(err));
     }
-    // lee la respuesta
-    char buffer[512];
-    int len = esp_http_client_read(cliente, buffer, sizeof(buffer) - 1);
-    if (len > 0) {
-        buffer[len] = '\0';
-        ESP_LOGI(TAG, "Respuesta del servidor: %s", buffer);
-    } else {
-        ESP_LOGE(TAG, "Error al leer la respuesta del servidor");
-    }
-    // libera el cliente HTTP
-    esp_http_client_cleanup(cliente);    
+    
+    free(json_data);
 }
 
 // Desuscribe de un tópico
 void http_desuscribir(const char *topico) {
-    // enviar un DELETE al servidor
-    char url[1024];
-    snprintf(url, sizeof(url), "%s/%s", servidor_base, topico);
-
-    esp_http_client_config_t config = {
-        .url = url,
-        .method = HTTP_METHOD_DELETE,
-        .disable_auto_redirect = true,
-    };
-
-    // inicializa el cliente HTTP
-    esp_http_client_handle_t cliente = esp_http_client_init(&config);
-    if (!cliente) {
-        ESP_LOGE(TAG, "No se pudo inicializar cliente HTTP");
+    if (cliente == NULL) {
+        ESP_LOGE(TAG, "No hay cliente HTTP inicializado");
         return;
     }
-
-    // configura el manejador de eventos
-    esp_err_t err = esp_http_client_perform(cliente);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Error al desuscribirse del tópico %s: %s", topico, esp_err_to_name(err));
-    } else {
-        ESP_LOGI(TAG, "Desuscrito del tópico %s", topico);
-    }
-
-    // lee la respuesta
-    char buffer[512];
-    int len = esp_http_client_read(cliente, buffer, sizeof(buffer) - 1);
-    if (len > 0) {
-        buffer[len] = '\0';
-        ESP_LOGI(TAG, "Respuesta del servidor: %s", buffer);
-    } else {
-        ESP_LOGE(TAG, "Error al leer la respuesta del servidor");
-    }
-
-    // elimina tarea sse asociada
     
-
-
-    // libera el cliente HTTP
-    esp_http_client_cleanup(cliente);
+    bool conectado = false;
+    if (xSemaphoreTake(http_mutex, portMAX_DELAY) == pdTRUE) {
+        conectado = http_conectado;
+        xSemaphoreGive(http_mutex);
+    }
+    
+    if (!conectado) {
+        ESP_LOGE(TAG, "Cliente HTTP no conectado");
+        return;
+    }
+    
+    // Buscar y detener la suscripción
+    if (xSemaphoreTake(http_mutex, portMAX_DELAY) == pdTRUE) {
+        http_sub_t *actual, *tmp;
+        STAILQ_FOREACH_SAFE(actual, &lista_subs, entradas, tmp) {
+            if (strcmp(actual->topico, topico) == 0) {
+                actual->activo = false;
+                
+                // Detener la tarea SSE
+                if (actual->task_handle != NULL) {
+                    vTaskDelete(actual->task_handle);
+                }
+                
+                STAILQ_REMOVE(&lista_subs, actual, http_sub, entradas);
+                free(actual->topico);
+                free(actual);
+                xSemaphoreGive(http_mutex);
+                
+                // Enviar DELETE al servidor
+                char url[512];
+                snprintf(url, sizeof(url), "%s%s?topico=%s", base_url, HTTP_RUTA, topico);
+                
+                esp_http_client_set_url(cliente, url);
+                esp_http_client_set_method(cliente, HTTP_METHOD_DELETE);
+                
+                esp_err_t err = esp_http_client_perform(cliente);
+                if (err == ESP_OK) {
+                    int status_code = esp_http_client_get_status_code(cliente);
+                    if (status_code == 200) {
+                        ESP_LOGI(TAG, "Desuscrito del tópico %s", topico);
+                    } else {
+                        ESP_LOGE(TAG, "Error HTTP al desuscribir: %d", status_code);
+                    }
+                } else {
+                    ESP_LOGE(TAG, "Error al realizar DELETE: %s", esp_err_to_name(err));
+                }
+                
+                return;
+            }
+        }
+        xSemaphoreGive(http_mutex);
+    }
+    
+    ESP_LOGW(TAG, "Tópico %s no encontrado en suscripciones", topico);
 }
 
 // Desconecta y libera recursos
 void http_desconectar() {
-    // libera el cliente HTTP
-    esp_http_client_cleanup(NULL);
-    servidor_base[0] = '\0';  // reinicia la URL del servidor
-    ESP_LOGI(TAG, "Desconectado del servidor HTTP");
+    if (cliente != NULL) {
+        // Detener todas las suscripciones
+        if (xSemaphoreTake(http_mutex, portMAX_DELAY) == pdTRUE) {
+            http_sub_t *actual, *tmp;
+            STAILQ_FOREACH_SAFE(actual, &lista_subs, entradas, tmp) {
+                actual->activo = false;
+                
+                if (actual->task_handle != NULL) {
+                    vTaskDelete(actual->task_handle);
+                }
+                
+                STAILQ_REMOVE(&lista_subs, actual, http_sub, entradas);
+                free(actual->topico);
+                free(actual);
+            }
+            http_conectado = false;
+            xSemaphoreGive(http_mutex);
+        }
+        
+        esp_http_client_cleanup(cliente);
+        cliente = NULL;
+        ESP_LOGI(TAG, "Cliente HTTP desconectado y recursos liberados");
+    } else {
+        ESP_LOGE(TAG, "No hay cliente HTTP inicializado");
+    }
 }
-

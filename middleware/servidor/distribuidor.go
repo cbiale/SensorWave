@@ -10,6 +10,7 @@ func enviarCoAP(LOG string, payload Mensaje) {
 	// notifico a todos los observadores
 	mutexCoAP.Lock()
 	for _, o := range observadores[payload.Topico] {
+		loggerPrint(LOG, "Enviando mensaje a observador CoAP: %v", o)
 		enviarRespuesta(o.conexion, o.token, payload, valor.Add(1))
 	}
 	mutexCoAP.Unlock()

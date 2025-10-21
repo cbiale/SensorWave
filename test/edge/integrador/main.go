@@ -24,7 +24,7 @@ func main() {
 	fmt.Println("=== SISTEMA INTEGRADO DE AGRICULTURA INTELIGENTE ===")
 
 	// Crear instancia de ManagerEdge
-	manager, err := edge.Crear("agricultura_inteligente.db")
+	manager, err := edge.Crear("agricultura_inteligente.db", "localhost", "4222")
 	if err != nil {
 		fmt.Println("Error al crear ManagerEdge:", err)
 		return
@@ -111,6 +111,7 @@ func main() {
 		nombreTemp := fmt.Sprintf("invernadero.zona%d.temperatura", i)
 		err = manager.CrearSerie(edge.Serie{
 			NombreSerie:      nombreTemp,
+			TipoDatos:        edge.TipoNumerico,
 			CompresionBloque: edge.LZ4,
 			CompresionBytes:  edge.DeltaDelta,
 			TamañoBloque:     20,
@@ -128,6 +129,7 @@ func main() {
 		nombreHumedad := fmt.Sprintf("invernadero.zona%d.humedad_suelo", i)
 		err = manager.CrearSerie(edge.Serie{
 			NombreSerie:      nombreHumedad,
+			TipoDatos:        edge.TipoNumerico,
 			CompresionBloque: edge.ZSTD,
 			CompresionBytes:  edge.DeltaDelta,
 			TamañoBloque:     20,
@@ -152,6 +154,7 @@ func main() {
 	for _, nombre := range seriesAdicionales {
 		err = manager.CrearSerie(edge.Serie{
 			NombreSerie:      nombre,
+			TipoDatos:        edge.TipoNumerico,
 			CompresionBloque: edge.Snappy,
 			CompresionBytes:  edge.RLE,
 			TamañoBloque:     15,

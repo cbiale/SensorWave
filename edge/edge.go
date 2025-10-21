@@ -7,33 +7,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	sw_cliente "github.com/cbiale/sensorwave/middleware/cliente_nats"
 	"github.com/cockroachdb/pebble"
-	"github.com/nats-io/nats.go"
+	"github.com/google/uuid"
 )
 
-type OperacionEscritura struct {
-	SerieId      int
-	TiempoInicio int64
-	TiempoFinal  int64
-	Datos        []byte
-	NombreSerie  string
-}
-
 type ManagerEdge struct {
-	db          *pebble.DB    // Conexión a PebbleDB
-	cache       *Cache        // Cache para configuraciones de series
-	buffers     sync.Map      // Buffers por serie (thread-safe map)
-	done        chan struct{} // Canal para señalar cierre
-	counter     int           // Contador para serie_id
-	mu          sync.RWMutex  // Mutex para proteger counter
-	motorReglas *MotorReglas  // Motor de reglas integrado
-	natsConn    *nats.Conn    // Conexión NATS
-	nodeID      string        // ID del nodo Edge
+	db              *pebble.DB              // Conexión a PebbleDB
+	cache           *Cache                  // Cache para configuraciones de series
+	buffers         sync.Map                // Buffers por serie (thread-safe map)
+	done            chan struct{}           // Canal para señalar cierre
+	counter         int                     // Contador para serie_id
+	mu              sync.RWMutex            // Mutex para proteger counter
+	motorReglas     *MotorReglas            // Motor de reglas integrado
+	nodeID          string                  // ID único persistente del nodo
+	cliente         *sw_cliente.ClienteNATS // Cliente NATS
+	direccionNATS   string                  // Dirección del servidor NATS
+	puertoNATS      string                  // Puerto del servidor NATS
+	reconectando    bool                    // Indica si está en proceso de reconexión
+	muConexion      sync.Mutex              // Mutex para proteger operaciones de conexión
+	ultimaSincro    time.Time               // Timestamp de última sincronización
+	muSincronizando sync.Mutex              // Mutex para evitar sincronizaciones concurrentes
 }
 
 type Cache struct {
@@ -43,7 +44,9 @@ type Cache struct {
 
 type Serie struct {
 	SerieId          int                   // ID de la serie en la base de datos
-	NombreSerie      string                // Nombre de la serie
+	NombreSerie      string                // Nombre de la serie (deprecated, usar Path)
+	Path             string                // Path jerárquico: "dispositivo_001/temperatura"
+	Tags             map[string]string     // Tags: {"ubicacion": "sala1", "tipo": "DHT22"}
 	TipoDatos        TipoDatos             // Tipo de datos almacenados
 	CompresionBloque TipoCompresionBloque  // Compresión nivel bloque
 	CompresionBytes  TipoCompresionValores // Compresión nivel valores
@@ -72,9 +75,9 @@ const (
 type TipoDatos string
 
 const (
-	TipoNumerico   TipoDatos = "NUMERIC"
-	TipoCategorico TipoDatos = "CATEGORICAL"
-	TipoMixto      TipoDatos = "MIXED"
+	TipoNumerico   TipoDatos = "NUMERICO"
+	TipoCategorico TipoDatos = "CATEGORICO"
+	TipoMixto      TipoDatos = "MIXTO"
 )
 
 type Medicion struct {
@@ -91,8 +94,25 @@ type SerieBuffer struct {
 	datosCanal chan Medicion // Canal para recibir nuevos datos
 }
 
+type SuscripcionNodo struct {
+	ID     string            `json:"id"`
+	Series map[string]string `json:"series"`
+}
+
+type NuevaSerie struct {
+	NodeID  string `json:"node_id"`
+	Path    string `json:"path"`
+	SerieID int    `json:"serie_id"`
+}
+
+type Heartbeat struct {
+	NodeID    string    `json:"node_id"`
+	Timestamp time.Time `json:"timestamp"`
+	Activo    bool      `json:"activo"`
+}
+
 // Crear inicializa el ManagerEdge con PebbleDB y la cache
-func Crear(nombre string) (ManagerEdge, error) {
+func Crear(nombre string, direccionNATS string, puertoNATS string) (ManagerEdge, error) {
 	db, err := pebble.Open(nombre, &pebble.Options{})
 	if err != nil {
 		return ManagerEdge{}, err
@@ -104,8 +124,29 @@ func Crear(nombre string) (ManagerEdge, error) {
 		cache: &Cache{
 			datos: make(map[string]Serie),
 		},
-		done:    make(chan struct{}),
-		counter: 0,
+		done:          make(chan struct{}),
+		counter:       0,
+		direccionNATS: direccionNATS,
+		puertoNATS:    puertoNATS,
+		reconectando:  false,
+		ultimaSincro:  time.Time{},
+	}
+
+	// Cargar o generar nodeID
+	nodeIDBytes, closer, err := db.Get([]byte("meta/node_id"))
+	if err == pebble.ErrNotFound {
+		manager.nodeID = generarNodeID()
+		err = db.Set([]byte("meta/node_id"), []byte(manager.nodeID), pebble.Sync)
+		if err != nil {
+			return ManagerEdge{}, fmt.Errorf("error al guardar node_id: %v", err)
+		}
+		log.Printf("Nuevo nodeID generado: %s", manager.nodeID)
+	} else if err != nil {
+		return ManagerEdge{}, fmt.Errorf("error al leer node_id: %v", err)
+	} else {
+		manager.nodeID = string(nodeIDBytes)
+		closer.Close()
+		log.Printf("NodeID cargado desde DB: %s", manager.nodeID)
 	}
 
 	// Cargar contador de series desde PebbleDB
@@ -136,7 +177,42 @@ func Crear(nombre string) (ManagerEdge, error) {
 		return ManagerEdge{}, fmt.Errorf("error al cargar reglas: %v", err)
 	}
 
+	// Conectar a NATS (opcional - el nodo puede funcionar sin conexión)
+	cliente, err := sw_cliente.Conectar(direccionNATS, puertoNATS)
+	if err != nil {
+		log.Printf("ADVERTENCIA: Nodo edge funcionando en modo autónomo sin NATS: %v", err)
+		log.Printf("El nodo continuará operando localmente. Las funciones de cluster están deshabilitadas.")
+		manager.cliente = nil
+
+		go manager.intentarReconexionPeriodica()
+	} else {
+		manager.cliente = cliente
+
+		if err := manager.sincronizarEstado(); err != nil {
+			log.Printf("Error al sincronizar estado inicial: %v", err)
+		}
+
+		go manager.enviarHeartbeat()
+
+		log.Printf("Nodo edge conectado al cluster vía NATS")
+	}
+
 	return *manager, nil
+}
+
+// generarNodeID genera un ID único para el nodo edge
+func generarNodeID() string {
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
+	shortUUID := uuid.New().String()[:8]
+	return fmt.Sprintf("edge-%s-%s", hostname, shortUUID)
+}
+
+// ObtenerNodeID retorna el ID del nodo edge
+func (me *ManagerEdge) ObtenerNodeID() string {
+	return me.nodeID
 }
 
 // cargarSeriesExistentes carga todas las series desde PebbleDB al cache
@@ -156,9 +232,9 @@ func (me *ManagerEdge) cargarSeriesExistentes() error {
 			continue
 		}
 
-		// Extraer nombre de serie de la clave
-		nombreSerie := strings.TrimPrefix(key, "series/")
-		if nombreSerie == "" {
+		// Extraer path de la clave
+		seriesPath := strings.TrimPrefix(key, "series/")
+		if seriesPath == "" {
 			continue
 		}
 
@@ -170,9 +246,19 @@ func (me *ManagerEdge) cargarSeriesExistentes() error {
 			continue // Skip series con error de deserialización
 		}
 
-		// Agregar al cache
+		// Retrocompatibilidad: si Path está vacío, usar NombreSerie
+		if config.Path == "" {
+			config.Path = config.NombreSerie
+		}
+
+		// Inicializar Tags si es nil
+		if config.Tags == nil {
+			config.Tags = make(map[string]string)
+		}
+
+		// Agregar al cache usando Path como clave
 		me.cache.mu.Lock()
-		me.cache.datos[nombreSerie] = config
+		me.cache.datos[seriesPath] = config
 		me.cache.mu.Unlock()
 
 		// Crear buffer y goroutine para cada serie
@@ -184,7 +270,7 @@ func (me *ManagerEdge) cargarSeriesExistentes() error {
 			datosCanal: make(chan Medicion, 100),
 		}
 
-		me.buffers.Store(nombreSerie, serieBuffer)
+		me.buffers.Store(seriesPath, serieBuffer)
 		go me.manejarBuffer(serieBuffer)
 	}
 
@@ -196,14 +282,39 @@ func generarClaveSerie(nombreSerie string) []byte {
 	return []byte("series/" + nombreSerie)
 }
 
+// generarClaveSerieConPath genera una clave usando Path (nueva API)
+func generarClaveSerieConPath(path string) []byte {
+	return []byte("series/" + path)
+}
+
+// generarSeriesKey genera un identificador único para una serie basado en Path y Tags
+func generarSeriesKey(path string, tags map[string]string) string {
+	if tags == nil || len(tags) == 0 {
+		return path
+	}
+
+	keys := make([]string, 0, len(tags))
+	for k := range tags {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var parts []string
+	parts = append(parts, path)
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s", k, tags[k]))
+	}
+	return strings.Join(parts, ",")
+}
+
 // generarClaveDatos genera una clave PebbleDB incluyendo el tipo de datos
 func generarClaveDatos(serieId int, tipoDatos TipoDatos, tiempoInicio, tiempoFin int64) []byte {
 	key := fmt.Sprintf("data/%s/%010d/%020d_%020d", string(tipoDatos), serieId, tiempoInicio, tiempoFin)
 	return []byte(key)
 }
 
-// serializeserie serializa una configuración de Serie a bytes
-func serializeSerie(serie Serie) ([]byte, error) {
+// serializarSerie serializa una configuración de Serie a bytes
+func serializarSerie(serie Serie) ([]byte, error) {
 	var buffer bytes.Buffer
 	encoder := gob.NewEncoder(&buffer)
 	err := encoder.Encode(serie)
@@ -225,21 +336,38 @@ func (me *ManagerEdge) Cerrar() error {
 		return true
 	})
 
+	// Desconectar cliente NATS
+	if me.cliente != nil {
+		me.cliente.Desconectar()
+	}
+
 	return me.db.Close()
 }
 
 // CrearSerie crea una nueva serie si no existe. Si ya existe, no hace nada.
 func (me *ManagerEdge) CrearSerie(config Serie) error {
+	// Generar clave única basada en Path o NombreSerie (retrocompatibilidad)
+	seriesKey := config.Path
+	if seriesKey == "" {
+		seriesKey = config.NombreSerie
+		config.Path = config.NombreSerie
+	}
+
+	// Inicializar Tags si es nil
+	if config.Tags == nil {
+		config.Tags = make(map[string]string)
+	}
+
 	// Verificar si la serie ya existe en cache
 	me.cache.mu.RLock()
-	if _, exists := me.cache.datos[config.NombreSerie]; exists {
+	if _, exists := me.cache.datos[seriesKey]; exists {
 		me.cache.mu.RUnlock()
 		return nil
 	}
 	me.cache.mu.RUnlock()
 
 	// Verificar si existe en PebbleDB
-	key := generarClaveSerie(config.NombreSerie)
+	key := generarClaveSerieConPath(seriesKey)
 	_, closer, err := me.db.Get(key)
 	if err == nil {
 		closer.Close()
@@ -265,7 +393,7 @@ func (me *ManagerEdge) CrearSerie(config Serie) error {
 	}
 
 	// Serializar y guardar configuración de serie
-	serieBytes, err := serializeSerie(config)
+	serieBytes, err := serializarSerie(config)
 	if err != nil {
 		return fmt.Errorf("error al serializar serie: %v", err)
 	}
@@ -275,9 +403,9 @@ func (me *ManagerEdge) CrearSerie(config Serie) error {
 		return fmt.Errorf("error al guardar serie: %v", err)
 	}
 
-	// Actualizar cache
+	// Actualizar cache usando Path como clave
 	me.cache.mu.Lock()
-	me.cache.datos[config.NombreSerie] = config
+	me.cache.datos[seriesKey] = config
 	me.cache.mu.Unlock()
 
 	// Crear buffer y goroutine para la nueva serie
@@ -289,8 +417,15 @@ func (me *ManagerEdge) CrearSerie(config Serie) error {
 		datosCanal: make(chan Medicion, 100),
 	}
 
-	me.buffers.Store(config.NombreSerie, buffer)
+	me.buffers.Store(seriesKey, buffer)
 	go me.manejarBuffer(buffer)
+
+	// Informar nueva serie al despachador
+	if me.cliente != nil {
+		if err := me.informarNuevaSerie(seriesKey, config.SerieId); err != nil {
+			log.Printf("Error al informar nueva serie: %v", err)
+		}
+	}
 
 	return nil
 }
@@ -369,7 +504,7 @@ func (me *ManagerEdge) Insertar(nombreSerie string, tiempo int64, dato interface
 
 		// Actualizar en PebbleDB
 		key := generarClaveSerie(nombreSerie)
-		serieBytes, err := serializeSerie(buffer.serie)
+		serieBytes, err := serializarSerie(buffer.serie)
 		if err == nil {
 			me.db.Set(key, serieBytes, pebble.Sync)
 		}
@@ -456,19 +591,6 @@ func (me *ManagerEdge) deberiaSkipearBloque(key string, tiempoInicio, tiempoFin 
 	}
 
 	return false
-}
-
-// extraerTipoDeClave extrae el tipo de datos de la clave del bloque
-func (me *ManagerEdge) extraerTipoDeClave(key string) TipoDatos {
-	parts := strings.Split(key, "/")
-
-	// Formato: data/TIPO/XXXXXXXXXX/TTTTTTTTTTTTTTTTTTTT_TTTTTTTTTTTTTTTTTTTT
-	if len(parts) == 4 {
-		return TipoDatos(parts[1])
-	}
-
-	// Formato desconocido - asumir mixto
-	return TipoMixto
 }
 
 // ConsultarRango consulta mediciones de una serie dentro de un rango de tiempo
@@ -808,7 +930,6 @@ func (me *ManagerEdge) cargarReglasExistentes() error {
 		// Agregar al motor (solo en memoria, ya está en DB)
 		me.motorReglas.mu.Lock()
 		me.motorReglas.reglas[regla.ID] = regla
-		me.motorReglas.estadisticas.ReglasActivas = len(me.motorReglas.reglas)
 		me.motorReglas.mu.Unlock()
 	}
 
@@ -843,7 +964,6 @@ func (me *ManagerEdge) AgregarRegla(regla *Regla) error {
 
 	regla.Activa = true
 	me.motorReglas.reglas[regla.ID] = regla
-	me.motorReglas.estadisticas.ReglasActivas = len(me.motorReglas.reglas)
 
 	log.Printf("Regla '%s' agregada exitosamente", regla.ID)
 	return nil
@@ -866,7 +986,6 @@ func (me *ManagerEdge) EliminarRegla(id string) error {
 
 	// Eliminar del cache
 	delete(me.motorReglas.reglas, id)
-	me.motorReglas.estadisticas.ReglasActivas = len(me.motorReglas.reglas)
 
 	log.Printf("Regla '%s' eliminada", id)
 	return nil
@@ -941,55 +1060,59 @@ func (me *ManagerEdge) HabilitarMotorReglas(habilitado bool) {
 	me.motorReglas.Habilitar(habilitado)
 }
 
-// =============================================================================
-// FUNCIONES NATS
-// =============================================================================
+func (me *ManagerEdge) informarSuscripcion() error {
+	if me.cliente == nil {
+		return nil
+	}
 
-// IniciarServicioNATS inicializa la conexión NATS y servicios del nodo Edge
-func (me *ManagerEdge) IniciarServicioNATS(nodeID, natsURL string) error {
-	nc, err := nats.Connect(natsURL)
+	me.cache.mu.RLock()
+	series := make(map[string]string)
+	for path, serie := range me.cache.datos {
+		series[path] = fmt.Sprintf("%d", serie.SerieId)
+	}
+	me.cache.mu.RUnlock()
+
+	suscripcion := SuscripcionNodo{
+		ID:     me.nodeID,
+		Series: series,
+	}
+
+	payload, err := json.Marshal(suscripcion)
 	if err != nil {
-		return fmt.Errorf("error conectando a NATS: %v", err)
+		return fmt.Errorf("error al serializar suscripción: %v", err)
 	}
-	me.natsConn = nc
-	me.nodeID = nodeID
 
-	// Registrarse con el despachador
-	registroMsg := map[string]interface{}{
-		"id":        nodeID,
-		"direccion": "nats://" + nodeID,
-		"timestamp": time.Now(),
-	}
-	registroBytes, _ := json.Marshal(registroMsg)
-	nc.Publish("despachador.registro", registroBytes)
-
-	// Suscribirse a comandos del despachador
-	nc.Subscribe("edge."+nodeID+".crear_serie", me.manejarCrearSerieNATS)
-	nc.Subscribe("edge."+nodeID+".obtener_series", me.manejarObtenerSeriesNATS)
-	nc.Subscribe("edge."+nodeID+".listar_series", me.manejarListarSeriesNATS)
-	nc.Subscribe("edge."+nodeID+".insertar", me.manejarInsertarNATS)
-	nc.Subscribe("edge."+nodeID+".consultar_rango", me.manejarConsultarRangoNATS)
-	nc.Subscribe("edge."+nodeID+".consultar_ultimo_punto", me.manejarConsultarUltimoPuntoNATS)
-	nc.Subscribe("edge."+nodeID+".consultar_primer_punto", me.manejarConsultarPrimerPuntoNATS)
-
-	// Suscribirse a comandos de reglas
-	nc.Subscribe("edge."+nodeID+".agregar_regla", me.manejarAgregarReglaNATS)
-	nc.Subscribe("edge."+nodeID+".eliminar_regla", me.manejarEliminarReglaNATS)
-	nc.Subscribe("edge."+nodeID+".actualizar_regla", me.manejarActualizarReglaNATS)
-	nc.Subscribe("edge."+nodeID+".listar_reglas", me.manejarListarReglasNATS)
-	nc.Subscribe("edge."+nodeID+".obtener_regla", me.manejarObtenerReglaNATS)
-	nc.Subscribe("edge."+nodeID+".procesar_dato_regla", me.manejarProcesarDatoReglaNATS)
-	nc.Subscribe("edge."+nodeID+".habilitar_motor_reglas", me.manejarHabilitarMotorReglasNATS)
-
-	// Iniciar heartbeat periódico
-	go me.enviarHeartbeat()
-
-	log.Printf("Nodo Edge %s conectado a NATS y servicios iniciados", nodeID)
+	me.cliente.Publicar("despachador.suscripcion", payload)
+	log.Printf("Suscripción informada: nodo %s con %d series", me.nodeID, len(series))
 	return nil
 }
 
-// enviarHeartbeat envía heartbeats periódicos al despachador
+func (me *ManagerEdge) informarNuevaSerie(path string, serieID int) error {
+	if me.cliente == nil {
+		return nil
+	}
+
+	nuevaSerie := NuevaSerie{
+		NodeID:  me.nodeID,
+		Path:    path,
+		SerieID: serieID,
+	}
+
+	payload, err := json.Marshal(nuevaSerie)
+	if err != nil {
+		return fmt.Errorf("error al serializar nueva serie: %v", err)
+	}
+
+	me.cliente.Publicar("despachador.nueva_serie", payload)
+	log.Printf("Nueva serie informada: %s (ID: %d) en nodo %s", path, serieID, me.nodeID)
+	return nil
+}
+
 func (me *ManagerEdge) enviarHeartbeat() {
+	if me.cliente == nil {
+		return
+	}
+
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -998,222 +1121,208 @@ func (me *ManagerEdge) enviarHeartbeat() {
 		case <-me.done:
 			return
 		case <-ticker.C:
-			heartbeat := map[string]interface{}{
-				"id":        me.nodeID,
-				"timestamp": time.Now(),
-				"activo":    true,
+			if me.cliente == nil {
+				return
 			}
-			heartbeatBytes, _ := json.Marshal(heartbeat)
-			me.natsConn.Publish("despachador.heartbeat", heartbeatBytes)
+
+			heartbeat := Heartbeat{
+				NodeID:    me.nodeID,
+				Timestamp: time.Now(),
+				Activo:    true,
+			}
+
+			payload, err := json.Marshal(heartbeat)
+			if err != nil {
+				log.Printf("Error al serializar heartbeat: %v", err)
+				continue
+			}
+
+			me.cliente.Publicar("despachador.heartbeat", payload)
+			log.Printf("Heartbeat enviado desde nodo %s", me.nodeID)
 		}
 	}
 }
 
-// =============================================================================
-// MANEJADORES NATS - SERIES
-// =============================================================================
+func (me *ManagerEdge) intentarReconexionPeriodica() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
 
-func (me *ManagerEdge) manejarCrearSerieNATS(m *nats.Msg) {
-	var config Serie
-	err := json.Unmarshal(m.Data, &config)
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error deserializando config: %v", err)))
-		return
+	for {
+		select {
+		case <-me.done:
+			return
+		case <-ticker.C:
+			me.muConexion.Lock()
+			if me.cliente != nil {
+				me.muConexion.Unlock()
+				return
+			}
+
+			if me.reconectando {
+				me.muConexion.Unlock()
+				continue
+			}
+
+			me.reconectando = true
+			me.muConexion.Unlock()
+
+			log.Printf("Intentando reconectar a NATS...")
+			cliente, err := sw_cliente.Conectar(me.direccionNATS, me.puertoNATS)
+
+			me.muConexion.Lock()
+			if err != nil {
+				log.Printf("Fallo al reconectar a NATS: %v", err)
+				me.reconectando = false
+				me.muConexion.Unlock()
+				continue
+			}
+
+			me.cliente = cliente
+			me.reconectando = false
+			me.muConexion.Unlock()
+
+			log.Printf("Reconexión a NATS exitosa")
+
+			if err := me.sincronizarEstado(); err != nil {
+				log.Printf("Error al sincronizar estado después de reconexión: %v", err)
+			}
+
+			go me.enviarHeartbeat()
+			return
+		}
 	}
-
-	err = me.CrearSerie(config)
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
-		return
-	}
-
-	m.Respond([]byte("OK"))
 }
 
-func (me *ManagerEdge) manejarObtenerSeriesNATS(m *nats.Msg) {
-	var request map[string]string
-	json.Unmarshal(m.Data, &request)
+func (me *ManagerEdge) sincronizarEstado() error {
+	me.muSincronizando.Lock()
+	defer me.muSincronizando.Unlock()
 
-	serie, err := me.ObtenerSeries(request["serie"])
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
-		return
+	if me.cliente == nil {
+		return fmt.Errorf("cliente NATS no disponible")
 	}
 
-	resultado, _ := json.Marshal(serie)
-	m.Respond(resultado)
+	if err := me.informarSuscripcion(); err != nil {
+		return fmt.Errorf("error al informar suscripción: %v", err)
+	}
+
+	me.ultimaSincro = time.Now()
+	log.Printf("Estado sincronizado exitosamente para nodo %s", me.nodeID)
+	return nil
 }
 
-func (me *ManagerEdge) manejarListarSeriesNATS(m *nats.Msg) {
-	series, err := me.ListarSeries()
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
-		return
+func (me *ManagerEdge) manejarDesconexion() {
+	me.muConexion.Lock()
+	defer me.muConexion.Unlock()
+
+	if me.cliente != nil {
+		me.cliente.Desconectar()
+		me.cliente = nil
+		log.Printf("Desconectado de NATS, cambiando a modo autónomo")
 	}
 
-	resultado, _ := json.Marshal(series)
-	m.Respond(resultado)
+	go me.intentarReconexionPeriodica()
 }
 
-func (me *ManagerEdge) manejarInsertarNATS(m *nats.Msg) {
-	var request map[string]interface{}
-	json.Unmarshal(m.Data, &request)
+func (me *ManagerEdge) EstadoConexion() string {
+	me.muConexion.Lock()
+	defer me.muConexion.Unlock()
 
-	serie := request["serie"].(string)
-	tiempo := int64(request["tiempo"].(float64))
-	dato := request["dato"]
-
-	err := me.Insertar(serie, tiempo, dato)
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
-		return
+	if me.cliente != nil {
+		return "conectado"
 	}
-
-	m.Respond([]byte("OK"))
+	if me.reconectando {
+		return "reconectando"
+	}
+	return "desconectado"
 }
 
-func (me *ManagerEdge) manejarConsultarRangoNATS(m *nats.Msg) {
-	var request map[string]interface{}
-	json.Unmarshal(m.Data, &request)
-
-	serie := request["serie"].(string)
-	inicioStr := request["inicio"].(string)
-	finStr := request["fin"].(string)
-
-	inicio, _ := time.Parse(time.RFC3339, inicioStr)
-	fin, _ := time.Parse(time.RFC3339, finStr)
-
-	resultado, err := me.ConsultarRango(serie, inicio, fin)
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
-		return
-	}
-
-	resultadoBytes, _ := json.Marshal(resultado)
-	m.Respond(resultadoBytes)
+func (me *ManagerEdge) ObtenerUltimaSincronizacion() time.Time {
+	me.muSincronizando.Lock()
+	defer me.muSincronizando.Unlock()
+	return me.ultimaSincro
 }
 
-func (me *ManagerEdge) manejarConsultarUltimoPuntoNATS(m *nats.Msg) {
-	var request map[string]string
-	json.Unmarshal(m.Data, &request)
+// ListarSeriesPorPath retorna todas las series que coincidan con un patrón de path
+// Soporta wildcards: "dispositivo_001/*" o "*/temperatura"
+func (me *ManagerEdge) ListarSeriesPorPath(pathPattern string) ([]Serie, error) {
+	me.cache.mu.RLock()
+	defer me.cache.mu.RUnlock()
 
-	resultado, err := me.ConsultarUltimoPunto(request["serie"])
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
-		return
+	var series []Serie
+	for _, serie := range me.cache.datos {
+		if matchPath(serie.Path, pathPattern) {
+			series = append(series, serie)
+		}
 	}
-
-	resultadoBytes, _ := json.Marshal(resultado)
-	m.Respond(resultadoBytes)
+	return series, nil
 }
 
-func (me *ManagerEdge) manejarConsultarPrimerPuntoNATS(m *nats.Msg) {
-	var request map[string]string
-	json.Unmarshal(m.Data, &request)
+// ListarSeriesPorTags retorna todas las series que tengan todos los tags especificados
+func (me *ManagerEdge) ListarSeriesPorTags(tags map[string]string) ([]Serie, error) {
+	me.cache.mu.RLock()
+	defer me.cache.mu.RUnlock()
 
-	resultado, err := me.ConsultarPrimerPunto(request["serie"])
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
-		return
+	var series []Serie
+	for _, serie := range me.cache.datos {
+		if matchTags(serie.Tags, tags) {
+			series = append(series, serie)
+		}
 	}
-
-	resultadoBytes, _ := json.Marshal(resultado)
-	m.Respond(resultadoBytes)
+	return series, nil
 }
 
-// =============================================================================
-// MANEJADORES NATS - REGLAS
-// =============================================================================
-
-func (me *ManagerEdge) manejarAgregarReglaNATS(m *nats.Msg) {
-	var regla *Regla
-	err := json.Unmarshal(m.Data, &regla)
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error deserializando regla: %v", err)))
-		return
-	}
-
-	err = me.AgregarRegla(regla)
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
-		return
-	}
-
-	m.Respond([]byte("OK"))
+// ListarSeriesPorDispositivo retorna todas las series de un dispositivo específico
+// Asume que el path es "dispositivo_XXX/metrica"
+func (me *ManagerEdge) ListarSeriesPorDispositivo(dispositivoID string) ([]Serie, error) {
+	pathPattern := dispositivoID + "/*"
+	return me.ListarSeriesPorPath(pathPattern)
 }
 
-func (me *ManagerEdge) manejarEliminarReglaNATS(m *nats.Msg) {
-	var request map[string]string
-	json.Unmarshal(m.Data, &request)
-
-	err := me.EliminarRegla(request["regla_id"])
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
-		return
-	}
-
-	m.Respond([]byte("OK"))
+// ConsultarRangoPorPath consulta mediciones usando path (con soporte para NombreSerie legacy)
+func (me *ManagerEdge) ConsultarRangoPorPath(path string, tiempoInicio, tiempoFin time.Time) ([]Medicion, error) {
+	return me.ConsultarRango(path, tiempoInicio, tiempoFin)
 }
 
-func (me *ManagerEdge) manejarActualizarReglaNATS(m *nats.Msg) {
-	var regla *Regla
-	err := json.Unmarshal(m.Data, &regla)
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error deserializando regla: %v", err)))
-		return
+// matchPath verifica si un path coincide con un patrón (soporta wildcard *)
+func matchPath(path, pattern string) bool {
+	if pattern == "*" {
+		return true
 	}
 
-	err = me.ActualizarRegla(regla)
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
-		return
+	if !strings.Contains(pattern, "*") {
+		return path == pattern
 	}
 
-	m.Respond([]byte("OK"))
-}
+	parts := strings.Split(pattern, "/")
+	pathParts := strings.Split(path, "/")
 
-func (me *ManagerEdge) manejarListarReglasNATS(m *nats.Msg) {
-	reglas := me.ListarReglas()
-	resultado, _ := json.Marshal(reglas)
-	m.Respond(resultado)
-}
-
-func (me *ManagerEdge) manejarObtenerReglaNATS(m *nats.Msg) {
-	var request map[string]string
-	json.Unmarshal(m.Data, &request)
-
-	regla, err := me.ObtenerRegla(request["regla_id"])
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
-		return
+	if len(parts) != len(pathParts) {
+		return false
 	}
 
-	resultado, _ := json.Marshal(regla)
-	m.Respond(resultado)
-}
-
-func (me *ManagerEdge) manejarProcesarDatoReglaNATS(m *nats.Msg) {
-	var request map[string]interface{}
-	json.Unmarshal(m.Data, &request)
-
-	serie := request["serie"].(string)
-	valor := request["valor"].(float64)
-	timestampStr := request["timestamp"].(string)
-	timestamp, _ := time.Parse(time.RFC3339, timestampStr)
-
-	err := me.ProcesarDatoRegla(serie, valor, timestamp)
-	if err != nil {
-		m.Respond([]byte(fmt.Sprintf("Error: %v", err)))
-		return
+	for i, part := range parts {
+		if part == "*" {
+			continue
+		}
+		if part != pathParts[i] {
+			return false
+		}
 	}
 
-	m.Respond([]byte("OK"))
+	return true
 }
 
-func (me *ManagerEdge) manejarHabilitarMotorReglasNATS(m *nats.Msg) {
-	var request map[string]bool
-	json.Unmarshal(m.Data, &request)
+// matchTags verifica si una serie tiene todos los tags especificados
+func matchTags(serieTags, filterTags map[string]string) bool {
+	if len(filterTags) == 0 {
+		return true
+	}
 
-	me.HabilitarMotorReglas(request["habilitado"])
-	m.Respond([]byte("OK"))
+	for key, value := range filterTags {
+		if serieValue, exists := serieTags[key]; !exists || serieValue != value {
+			return false
+		}
+	}
+
+	return true
 }

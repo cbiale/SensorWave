@@ -5,16 +5,19 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"time"
 )
 
 type Cliente struct {
-	Channel chan string // Canal para enviar mensajes al cliente
+	ID      string
+	Channel chan string
+	cerrado bool
+	mu      sync.Mutex
 }
 
-// Clientes por topico (revisar el formato de unidad)
 var (
-	clientesPorTopico = make(map[string][]*Cliente) // Mapa de clientes agrupados por tópico
-	mutexHTTP         sync.Mutex                    // Mutex para proteger el acceso a `clientesPorTopico`
+	clientesPorTopico = make(map[string]map[string]*Cliente)
+	mutexHTTP         sync.Mutex
 )
 
 const LOG_HTTP string = "HTTP"
@@ -42,61 +45,64 @@ func manejadorHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Manejar conexiones SSE (ver de no pasar por URL)
 func manejarSuscripcionHTTP(w http.ResponseWriter, r *http.Request) {
-	// Obtener el tópico del cliente desde los parámetros de la URL
 	topico := r.URL.Query().Get("topico")
 	if topico == "" {
 		http.Error(w, "Falta el parámetro 'topico'", http.StatusBadRequest)
 		return
 	}
 
-	// Configurar los encabezados para SSE
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
-	// Crear un cliente y agregarlo al mapa de clientes por tópico
-	cliente := &Cliente{Channel: make(chan string, 10000)}
+	clienteID := fmt.Sprintf("%d", time.Now().UnixNano())
+	cliente := &Cliente{
+		ID:      clienteID,
+		Channel: make(chan string, 10000),
+		cerrado: false,
+	}
+
 	mutexHTTP.Lock()
-	clientesPorTopico[topico] = append(clientesPorTopico[topico], cliente)
+	if clientesPorTopico[topico] == nil {
+		clientesPorTopico[topico] = make(map[string]*Cliente)
+	}
+	clientesPorTopico[topico][clienteID] = cliente
 	mutexHTTP.Unlock()
 
-	// Flusher para enviar datos inmediatamente
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "El servidor no soporta streaming", http.StatusInternalServerError)
 		return
 	}
 
-	loggerPrint(LOG_HTTP, "Cliente conectado al tópico "+topico)
+	fmt.Fprintf(w, "data: {\"clienteID\":\"%s\"}\n\n", clienteID)
+	flusher.Flush()
 
-	// Enviar mensajes al cliente en un bucle
+	loggerPrint(LOG_HTTP, "Cliente "+clienteID+" conectado al tópico "+topico)
+
 	for msg := range cliente.Channel {
 		fmt.Fprintf(w, "data: %s\n\n", msg)
 		flusher.Flush()
 	}
 
-	// Limpiar la conexión cuando el cliente se desconecte
 	mutexHTTP.Lock()
-	// Eliminar el cliente del mapa de clientes por tópico
 	if clientes, exists := clientesPorTopico[topico]; exists {
-		for i, c := range clientes {
-			if c == cliente {
-				clientesPorTopico[topico] = append(clientes[:i], clientes[i+1:]...) // Eliminar el cliente
-				break
-			}
+		delete(clientes, clienteID)
+		if len(clientes) == 0 {
+			delete(clientesPorTopico, topico)
 		}
 	}
-	// Si no hay más clientes en el tópico, eliminar el tópico
-	if len(clientesPorTopico[topico]) == 0 {
-		delete(clientesPorTopico, topico) // Eliminar el tópico si no tiene clientes
-	}
-	// Cerrar el canal del cliente
-	close(cliente.Channel)
 	mutexHTTP.Unlock()
 
-	loggerPrint(LOG_HTTP, "Cliente desconectado del tópico "+topico)
+	cliente.mu.Lock()
+	if !cliente.cerrado {
+		close(cliente.Channel)
+		cliente.cerrado = true
+	}
+	cliente.mu.Unlock()
+
+	loggerPrint(LOG_HTTP, "Cliente "+clienteID+" desconectado del tópico "+topico)
 }
 
 // Manejar publicaciones de mensajes
@@ -128,10 +134,38 @@ func manejarPublicacionHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// ver si es posible
-// deberia almacenarse un id de cliente por canal de comunicacion
-// cuando se maneje la desuscripcion con DELETE se deberia eliminar el cliente que se pasa como argumento
-// para ello el cliente debe manejarlo
 func manejarDesuscripcionHTTP(w http.ResponseWriter, r *http.Request) {
+	topico := r.URL.Query().Get("topico")
+	clienteID := r.URL.Query().Get("clienteID")
 
+	if topico == "" || clienteID == "" {
+		http.Error(w, "Faltan parámetros 'topico' o 'clienteID'", http.StatusBadRequest)
+		return
+	}
+
+	mutexHTTP.Lock()
+	var clienteEncontrado *Cliente
+	if clientes, exists := clientesPorTopico[topico]; exists {
+		if cliente, existe := clientes[clienteID]; existe {
+			clienteEncontrado = cliente
+			delete(clientes, clienteID)
+			if len(clientes) == 0 {
+				delete(clientesPorTopico, topico)
+			}
+		}
+	}
+	mutexHTTP.Unlock()
+
+	if clienteEncontrado != nil {
+		clienteEncontrado.mu.Lock()
+		if !clienteEncontrado.cerrado {
+			close(clienteEncontrado.Channel)
+			clienteEncontrado.cerrado = true
+		}
+		clienteEncontrado.mu.Unlock()
+		loggerPrint(LOG_HTTP, "Cliente "+clienteID+" desuscrito del tópico "+topico)
+		w.WriteHeader(http.StatusOK)
+	} else {
+		http.Error(w, "Cliente no encontrado", http.StatusNotFound)
+	}
 }

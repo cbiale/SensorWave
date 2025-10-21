@@ -9,5 +9,6 @@ func main() {
 	go servidor_sw.IniciarHTTP("8080")
 	go servidor_sw.IniciarMQTT("1883")
 	go servidor_sw.IniciarCoAP("5683")
+	go servidor_sw.IniciarNATS("4222")
 	select {}
 }

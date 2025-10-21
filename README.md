@@ -8,15 +8,15 @@ Los nodos basados en procesadores de bajo consumo tienen limitaciones de procesa
 
 ## Objetivos
 
-Se pretende desarrollar un  sistema de almacenamiento distribuido, transparente al usuario final, donde los datos residan al borde de la red y en un servicio de almacenamiento en la nube. Las solicitudes al sistema pueden provenir de usuarios locales a un nodo al borde o de usuarios conectados a uno o varios servidores despachadores ubicados en la nube. 
+Se pretende desarrollar un  sistema de almacenamiento distribuido, transparente al usuario final, donde los datos residan al borde de la red y en un servicio de almacenamiento en la nube. Las solicitudes al sistema pueden provenir de usuarios locales a un nodo al borde o de usuarios conectados a uno o varios servidores despachadores ubicados en la nube (o al borde). 
 
-Los nodos señales y actuadores son responsables de la transmisión de datos a los nodos al borde y del cambio de estado de los actuadores a petición de los nodos al borde. Para la comunicación entre los nodos al borde y los nodos señales y actuadores se utiliza el protocolo MQTT o alternativamente el protocolo HTTP.
+Los nodos señales y actuadores son responsables de la transmisión de datos a los nodos al borde y del cambio de estado de los actuadores a petición de los nodos al borde. Para la comunicación entre los nodos al borde y los nodos señales y actuadores se pueden utlizar los protocolos CoAP, HTTP, MQTT o NATS.
 
-Cada nodo al borde, equipado con una base de datos y un broker MQTT, se encarga de capturar y almacenar los datos enviados por los nodos señales y actuadores, gestionar los tipos de señales y actuadores admitidos y, ofrecer un motor de reglas que permite modificar el estado de los actuadores.
+Cada nodo al borde, equipado con una base de datos, un broker MQTT y un broker NATS se encarga de capturar y almacenar los datos enviados por los nodos sensores y actuadores como series y ofrece un motor de reglas que permite modificar el estado de los actuadores.
 
-Los nodos al borde tienen recursos de almacenamiento limitados y sólo pueden almacenar datos durante un período de tiempo determinado. Por ello se utiliza el concepto de "Tiempo de almacenamiento", que permite definir un período de tiempo durante el cual los datos deben residir localmente.
+Los nodos al borde tienen recursos de almacenamiento limitados y sólo pueden almacenar datos durante un período de tiempo determinado. Por ello se utiliza un sistema de compresión que permite determinar por cada serie el algoritmo de compresión y se usa el concepto de "Tiempo de almacenamiento", que permite definir un período de tiempo durante el cual los datos deben residir localmente.
 
-Cuando se cumple el tiempo de almacenamiento, los datos son automáticamente marcados para ser migrados a un servicio de almacenamiento en la nube. Para disminuir el ancho de banda utilizado, antes de la transmisión de datos, se implementa un proceso de compresión.
+Cuando se cumple el tiempo de almacenamiento, los datos son automáticamente marcados para ser migrados a un servicio de almacenamiento en la nube.
 
 En la nube, el servicio despachador es responsable de realizar solicitudes a los nodos al borde o al servicio de almacenamiento en la nube y enviar respuestas a los clientes. El servicio despachador es escalable horizontalmente.
 
@@ -31,7 +31,8 @@ Lenguajes de programación:
 - C (ESP-IDF)
 
 Artefactos:
-- Middleware para obtener datos de sensores y actuadores
+- Middleware para obtener datos de sensores y actuadores al borde y para comunicar el borde con la nube.
 - Base de datos al borde de la red basada en Pebble
-- Base de datos en la nube usando MiniO y Parquet
+- Base de datos en la nube usando MiniO
 - Servicio despachador de consultas en la nube
+- Base de datos en despachador basada en Pebble

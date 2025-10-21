@@ -40,6 +40,8 @@ const (
 type Condicion struct {
 	Serie       string
 	SeriesGrupo []string
+	PathPattern string            // Patrón de path: "dispositivo_001/*"
+	TagsFilter  map[string]string // Filtro por tags: {"ubicacion": "sala1"}
 	Agregacion  TipoAgregacion
 	Operador    TipoOperador
 	Valor       float64
@@ -69,42 +71,16 @@ type DatoTemporal struct {
 
 type EjecutorAccion func(accion Accion, regla *Regla, valores map[string]float64) error
 
-type EstadisticasMotor struct {
-	ReglasActivas      int
-	TotalEvaluaciones  int64
-	AccionesEjecutadas int64
-	UltimaLimpieza     time.Time
-	DatosEnCache       int
-	TiempoPromEval     time.Duration
-	ErroresEjecucion   int64
-}
-
 type MotorReglas struct {
 	reglas         map[string]*Regla
 	datos          map[string][]DatoTemporal
 	ejecutores     map[string]EjecutorAccion
-	estadisticas   EstadisticasMotor
 	habilitado     bool
 	maxDatosCache  int
 	tiempoLimpieza time.Duration
 	mu             sync.RWMutex
 	logger         *log.Logger
 	manager        *ManagerEdge // Referencia al manager padre (para acceso a datos)
-}
-
-func NuevoMotorReglas() *MotorReglas {
-	motor := &MotorReglas{
-		reglas:         make(map[string]*Regla),
-		datos:          make(map[string][]DatoTemporal),
-		ejecutores:     make(map[string]EjecutorAccion),
-		habilitado:     true,
-		maxDatosCache:  1000,
-		tiempoLimpieza: 5 * time.Minute,
-		logger:         log.New(log.Writer(), "[MotorReglas] ", log.LstdFlags|log.Lshortfile),
-	}
-
-	motor.registrarEjecutoresPorDefecto()
-	return motor
 }
 
 // nuevoMotorReglasIntegrado crea un MotorReglas integrado con ManagerEdge
@@ -144,62 +120,6 @@ func (mr *MotorReglas) registrarEjecutoresPorDefecto() {
 	}
 }
 
-func (mr *MotorReglas) AgregarRegla(regla *Regla) error {
-	if regla == nil {
-		return fmt.Errorf("regla no puede ser nil")
-	}
-
-	if err := mr.validarRegla(regla); err != nil {
-		return fmt.Errorf("regla inválida: %v", err)
-	}
-
-	mr.mu.Lock()
-	defer mr.mu.Unlock()
-
-	regla.Activa = true
-	mr.reglas[regla.ID] = regla
-	mr.estadisticas.ReglasActivas = len(mr.reglas)
-
-	mr.logger.Printf("Regla '%s' agregada exitosamente", regla.ID)
-	return nil
-}
-
-func (mr *MotorReglas) EliminarRegla(id string) error {
-	mr.mu.Lock()
-	defer mr.mu.Unlock()
-
-	if _, exists := mr.reglas[id]; !exists {
-		return fmt.Errorf("regla '%s' no encontrada", id)
-	}
-
-	delete(mr.reglas, id)
-	mr.estadisticas.ReglasActivas = len(mr.reglas)
-
-	mr.logger.Printf("Regla '%s' eliminada", id)
-	return nil
-}
-
-func (mr *MotorReglas) ActualizarRegla(regla *Regla) error {
-	if regla == nil {
-		return fmt.Errorf("regla no puede ser nil")
-	}
-
-	if err := mr.validarRegla(regla); err != nil {
-		return fmt.Errorf("regla inválida: %v", err)
-	}
-
-	mr.mu.Lock()
-	defer mr.mu.Unlock()
-
-	if _, exists := mr.reglas[regla.ID]; !exists {
-		return fmt.Errorf("regla '%s' no encontrada", regla.ID)
-	}
-
-	mr.reglas[regla.ID] = regla
-	mr.logger.Printf("Regla '%s' actualizada", regla.ID)
-	return nil
-}
-
 func (mr *MotorReglas) ProcesarDato(serie string, valor float64, timestamp time.Time) error {
 	if !mr.habilitado {
 		return nil
@@ -227,21 +147,14 @@ func (mr *MotorReglas) ProcesarDato(serie string, valor float64, timestamp time.
 }
 
 func (mr *MotorReglas) evaluarReglas(timestamp time.Time) error {
-	inicio := time.Now()
-	defer func() {
-		mr.estadisticas.TiempoPromEval = time.Since(inicio)
-	}()
 
 	for _, regla := range mr.reglas {
 		if !regla.Activa {
 			continue
 		}
 
-		mr.estadisticas.TotalEvaluaciones++
-
 		if mr.evaluarCondicionesRegla(regla, timestamp) {
 			if err := mr.ejecutarAcciones(regla, timestamp); err != nil {
-				mr.estadisticas.ErroresEjecucion++
 				mr.logger.Printf("Error ejecutando acciones de regla '%s': %v", regla.ID, err)
 			}
 		}
@@ -286,14 +199,19 @@ func (mr *MotorReglas) evaluarCondicion(condicion *Condicion, timestamp time.Tim
 	var valorEvaluacion float64
 	var err error
 
-	if len(condicion.SeriesGrupo) > 0 {
+	if condicion.PathPattern != "" || len(condicion.TagsFilter) > 0 {
+		seriesResueltas := mr.resolverSeriesPorCondicion(condicion)
+		if len(seriesResueltas) == 0 {
+			return false
+		}
+		valorEvaluacion, err = mr.calcularAgregacion(seriesResueltas, condicion.Agregacion, tiempoInicio, timestamp)
+	} else if len(condicion.SeriesGrupo) > 0 {
 		valorEvaluacion, err = mr.calcularAgregacion(condicion.SeriesGrupo, condicion.Agregacion, tiempoInicio, timestamp)
 	} else {
 		valorEvaluacion, err = mr.obtenerValorSerie(condicion.Serie, tiempoInicio, timestamp)
 	}
 
 	if err != nil {
-//		mr.logger.Printf("Error evaluando condición: %v", err)
 		return false
 	}
 
@@ -482,8 +400,6 @@ func (mr *MotorReglas) ejecutarAcciones(regla *Regla, timestamp time.Time) error
 		if err := ejecutor(accion, regla, valores); err != nil {
 			return fmt.Errorf("error ejecutando acción %s: %v", accion.Tipo, err)
 		}
-
-		mr.estadisticas.AccionesEjecutadas++
 	}
 
 	return nil
@@ -540,9 +456,6 @@ func (mr *MotorReglas) LimpiarDatosAntiguos(tiempoRetencion time.Duration) {
 		}
 	}
 
-	mr.estadisticas.UltimaLimpieza = time.Now()
-	mr.estadisticas.DatosEnCache = mr.contarDatosEnCache()
-
 	mr.logger.Printf("Limpieza completada: %d datos eliminados", datosEliminados)
 }
 
@@ -587,16 +500,29 @@ func (mr *MotorReglas) validarRegla(regla *Regla) error {
 }
 
 func (mr *MotorReglas) validarCondicion(condicion *Condicion) error {
-	if condicion.Serie == "" && len(condicion.SeriesGrupo) == 0 {
-		return fmt.Errorf("debe especificar una serie o un grupo de series")
+	tieneSerieIndividual := condicion.Serie != ""
+	tieneGrupo := len(condicion.SeriesGrupo) > 0
+	tienePathPattern := condicion.PathPattern != ""
+	tieneTagsFilter := len(condicion.TagsFilter) > 0
+
+	if !tieneSerieIndividual && !tieneGrupo && !tienePathPattern && !tieneTagsFilter {
+		return fmt.Errorf("debe especificar una serie, grupo de series, PathPattern o TagsFilter")
 	}
 
-	if condicion.Serie != "" && len(condicion.SeriesGrupo) > 0 {
+	if tieneSerieIndividual && tieneGrupo {
 		return fmt.Errorf("no se puede especificar tanto serie individual como grupo de series")
+	}
+
+	if (tienePathPattern || tieneTagsFilter) && (tieneSerieIndividual || tieneGrupo) {
+		return fmt.Errorf("PathPattern/TagsFilter no se puede combinar con Serie/SeriesGrupo")
 	}
 
 	if len(condicion.SeriesGrupo) > 0 && condicion.Agregacion == "" {
 		return fmt.Errorf("debe especificar tipo de agregación para grupo de series")
+	}
+
+	if (tienePathPattern || tieneTagsFilter) && condicion.Agregacion == "" {
+		return fmt.Errorf("debe especificar tipo de agregación para PathPattern/TagsFilter")
 	}
 
 	if condicion.VentanaT <= 0 {
@@ -676,4 +602,35 @@ func (mr *MotorReglas) ObtenerRegla(id string) (*Regla, error) {
 	}
 
 	return regla, nil
+}
+
+// resolverSeriesPorCondicion resuelve las series que coinciden con PathPattern o TagsFilter
+func (mr *MotorReglas) resolverSeriesPorCondicion(condicion *Condicion) []string {
+	var seriesResueltas []string
+
+	if mr.manager == nil {
+		return seriesResueltas
+	}
+
+	// Si hay PathPattern, usar ese filtro
+	if condicion.PathPattern != "" {
+		series, err := mr.manager.ListarSeriesPorPath(condicion.PathPattern)
+		if err == nil {
+			for _, serie := range series {
+				seriesResueltas = append(seriesResueltas, serie.Path)
+			}
+		}
+	}
+
+	// Si hay TagsFilter, filtrar por tags
+	if len(condicion.TagsFilter) > 0 {
+		series, err := mr.manager.ListarSeriesPorTags(condicion.TagsFilter)
+		if err == nil {
+			for _, serie := range series {
+				seriesResueltas = append(seriesResueltas, serie.Path)
+			}
+		}
+	}
+
+	return seriesResueltas
 }

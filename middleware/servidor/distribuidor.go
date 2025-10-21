@@ -55,3 +55,20 @@ func enviarMQTT (LOG string, payload Mensaje) {
 		loggerPrint(LOG, "Error: %v", token.Error())
 	}		
 }
+// enviarNATS publica un mensaje en NATS
+func enviarNATS(LOG string, payload Mensaje) {
+	loggerPrint(LOG, ">> Publicando mensaje en NATS "+payload.Topico)
+
+	// Serializar el mensaje a JSON
+	mensajeBytes, err := json.Marshal(payload)
+	if err != nil {
+		loggerPrint(LOG, "Error al serializar mensaje: %v", err)
+		return
+	}
+
+	// Publicar en NATS
+	err = clienteNATS.Publish("middleware."+payload.Topico, mensajeBytes)
+	if err != nil {
+		loggerPrint(LOG, "Error publicando en NATS: %v", err)
+	}
+}

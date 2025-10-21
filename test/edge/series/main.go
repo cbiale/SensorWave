@@ -12,7 +12,7 @@ import (
 
 func main() {
 	// Crear una instancia de ManagerEdge
-	manager, err := edge.Crear("test_series.db")
+	manager, err := edge.Crear("test_series.db", "localhost", "4222")
 	if err != nil {
 		fmt.Println("Error al crear ManagerEdge:", err)
 		return
@@ -32,36 +32,36 @@ func main() {
 		{
 			NombreSerie:      "sensor1.temperatura",
 			TipoDatos:        edge.TipoNumerico,
-			CompresionBloque: edge.TipoCompresionBloque(edge.LZ4),
-			CompresionBytes:  edge.TipoCompresionValores(edge.DeltaDelta),
+			CompresionBloque: edge.LZ4,
+			CompresionBytes:  edge.DeltaDelta,
 			TamañoBloque:     10,
 		},
 		{
 			NombreSerie:      "sensor1.humedad",
 			TipoDatos:        edge.TipoNumerico,
-			CompresionBloque: edge.TipoCompresionBloque(edge.ZSTD),
-			CompresionBytes:  edge.TipoCompresionValores(edge.DeltaDelta),
+			CompresionBloque: edge.ZSTD,
+			CompresionBytes:  edge.DeltaDelta,
 			TamañoBloque:     20,
 		},
 		{
 			NombreSerie:      "sensor1.presion",
 			TipoDatos:        edge.TipoNumerico,
-			CompresionBloque: edge.TipoCompresionBloque(edge.Snappy),
-			CompresionBytes:  edge.TipoCompresionValores(edge.RLE),
+			CompresionBloque: edge.Snappy,
+			CompresionBytes:  edge.RLE,
 			TamañoBloque:     15,
 		},
 		{
 			NombreSerie:      "sensor2.temperatura",
 			TipoDatos:        edge.TipoNumerico,
-			CompresionBloque: edge.TipoCompresionBloque(edge.Gzip),
-			CompresionBytes:  edge.TipoCompresionValores(edge.DeltaDelta),
+			CompresionBloque: edge.Gzip,
+			CompresionBytes:  edge.DeltaDelta,
 			TamañoBloque:     30,
 		},
 		{
 			NombreSerie:      "sensor1.estado",
 			TipoDatos:        edge.TipoCategorico,
-			CompresionBloque: edge.TipoCompresionBloque(edge.LZ4),
-			CompresionBytes:  edge.TipoCompresionValores(edge.RLE),
+			CompresionBloque: edge.LZ4,
+			CompresionBytes:  edge.RLE,
 			TamañoBloque:     10,
 		},
 	}
@@ -324,8 +324,8 @@ func main() {
 	serieInferencia := edge.Serie{
 		NombreSerie:      "sensor.inferencia.automatica",
 		TipoDatos:        edge.TipoMixto, // Tipo mixto permite inferencia
-		CompresionBloque: edge.TipoCompresionBloque(edge.LZ4),
-		CompresionBytes:  edge.TipoCompresionValores(edge.DeltaDelta),
+		CompresionBloque: edge.LZ4,
+		CompresionBytes:  edge.DeltaDelta,
 		TamañoBloque:     5,
 	}
 
@@ -368,8 +368,8 @@ func main() {
 	serieCategórica := edge.Serie{
 		NombreSerie:      "sensor.inferencia.categorica",
 		TipoDatos:        edge.TipoMixto,
-		CompresionBloque: edge.TipoCompresionBloque(edge.LZ4),
-		CompresionBytes:  edge.TipoCompresionValores(edge.RLE),
+		CompresionBloque: edge.LZ4,
+		CompresionBytes:  edge.RLE,
 		TamañoBloque:     5,
 	}
 

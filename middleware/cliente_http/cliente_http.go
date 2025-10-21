@@ -9,14 +9,16 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/cbiale/sensorwave/middleware"
 )
 
-// ClienteHTTP representa un cliente HTTP
 type ClienteHTTP struct {
-	BaseURL string
-	Cliente *http.Client
+	BaseURL   string
+	Cliente   *http.Client
+	clienteID string
+	mu        sync.Mutex
 }
 
 var ruta string = "/sensorwave"
@@ -72,9 +74,7 @@ func (c *ClienteHTTP) Publicar(topico string, payload interface{}) {
 	}
 }
 
-// Suscribir realiza un GET al servidor HTTP
 func (c *ClienteHTTP) Suscribir(topico string, callback middleware.CallbackFunc) {
-	// Realizar la solicitud GET
 	go func() {
 		url := fmt.Sprintf("%s%s?topico=%s", c.BaseURL, ruta, topico)
 		resp, err := c.Cliente.Get(url)
@@ -83,11 +83,9 @@ func (c *ClienteHTTP) Suscribir(topico string, callback middleware.CallbackFunc)
 		}
 		defer resp.Body.Close()
 
-		// Llamar al callback con los datos recibidos
-		// Crear un lector para el flujo SSE
 		reader := bufio.NewReader(resp.Body)
+		primerMensaje := true
 
-		// Leer el flujo SSE y llamar al callback con los datos
 		for {
 			linea, err := reader.ReadString('\n')
 			if err != nil {
@@ -98,11 +96,23 @@ func (c *ClienteHTTP) Suscribir(topico string, callback middleware.CallbackFunc)
 				log.Fatalf("Error al leer el flujo SSE: %v", err)
 			}
 
-			// Procesar solo líneas que comiencen con "data: "
 			if strings.HasPrefix(linea, "data: ") {
 				datos := strings.TrimPrefix(linea, "data: ")
-				datos = strings.TrimSpace(datos) // Eliminar espacios en blanco
-				// Delegar la lectura del flujo SSE al callback
+				datos = strings.TrimSpace(datos)
+
+				if primerMensaje {
+					var msg map[string]string
+					if err := json.Unmarshal([]byte(datos), &msg); err == nil {
+						if id, ok := msg["clienteID"]; ok {
+							c.mu.Lock()
+							c.clienteID = id
+							c.mu.Unlock()
+							primerMensaje = false
+							continue
+						}
+					}
+				}
+
 				callback(topico, datos)
 			}
 		}
@@ -110,9 +120,16 @@ func (c *ClienteHTTP) Suscribir(topico string, callback middleware.CallbackFunc)
 }
 
 func (c *ClienteHTTP) Desuscribir(topico string) {
+	c.mu.Lock()
+	clienteID := c.clienteID
+	c.mu.Unlock()
 
-	// enviar un Delete
-	url := fmt.Sprintf("%s%s?topico=%s", c.BaseURL, ruta, topico)
+	if clienteID == "" {
+		log.Println("No hay clienteID disponible, no se puede desuscribir")
+		return
+	}
+
+	url := fmt.Sprintf("%s%s?topico=%s&clienteID=%s", c.BaseURL, ruta, topico, clienteID)
 	req, err := http.NewRequest("DELETE", url, nil)
 	if err != nil {
 		log.Fatalf("Error al crear la solicitud DELETE: %v", err)
@@ -122,7 +139,7 @@ func (c *ClienteHTTP) Desuscribir(topico string) {
 		log.Fatalf("Error al realizar la solicitud DELETE: %v", err)
 	}
 	defer resp.Body.Close()
-	// Verificar el código de respuesta
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		log.Fatalf("Error en la respuesta del servidor: %s", string(body))

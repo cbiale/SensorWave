@@ -22,7 +22,7 @@ func IniciarNATS(puerto string) {
 	clienteNATS = nc
 
 	// Suscribirse como middleware/broker
-	_, err = clienteNATS.Subscribe("middleware.>", manejarMensajeMiddleware)
+	_, err = clienteNATS.Subscribe("middleware.>", manejadorNATS)
 	if err != nil {
 		loggerFatal(LOG_NATS, "Error suscribiéndose a middleware.>: %v", err)
 	}
@@ -30,8 +30,8 @@ func IniciarNATS(puerto string) {
 	loggerPrint(LOG_NATS, "Cliente NATS conectado y suscrito a middleware.>")
 }
 
-// manejarMensajeMiddleware maneja mensajes recibidos en el middleware
-func manejarMensajeMiddleware(m *nats.Msg) {
+// manejadorNATS maneja mensajes recibidos en el middleware
+func manejadorNATS(m *nats.Msg) {
 	var mensaje Mensaje
 	err := json.Unmarshal(m.Data, &mensaje)
 	if err != nil {
@@ -50,20 +50,3 @@ func manejarMensajeMiddleware(m *nats.Msg) {
 	}
 }
 
-// enviarNATS publica un mensaje en NATS
-func enviarNATS(LOG string, payload Mensaje) {
-	loggerPrint(LOG, ">> Publicando mensaje en NATS "+payload.Topico)
-
-	// Serializar el mensaje a JSON
-	mensajeBytes, err := json.Marshal(payload)
-	if err != nil {
-		loggerPrint(LOG, "Error al serializar mensaje: %v", err)
-		return
-	}
-
-	// Publicar en NATS
-	err = clienteNATS.Publish("middleware."+payload.Topico, mensajeBytes)
-	if err != nil {
-		loggerPrint(LOG, "Error publicando en NATS: %v", err)
-	}
-}

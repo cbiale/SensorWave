@@ -2,7 +2,7 @@
 
 ## Consideraciones
 
-En un sistema de Internet de las Cosas tradicional, los datos recopilados por los nodos señales y actuadores son enviados a la nube para su almacenamiento y análisis. Los nodos reciben como respuesta comandos o instrucciones de control que producen cambios en sus actuadores. Este enfoque conduce a una alta latencia en la comunicación, un flujo de datos ascendente alto y mayores costos en los centros de datos en la nube. Adicionalmente, muchos sistemas de Internet de las Cosas experimentan problemas de conectividad que provocan la pérdida de datos si no existe un almacenamiento local.
+En un sistema de Internet de las Cosas tradicional, los datos recopilados por los nodos sensores y actuadores son enviados a la nube para su almacenamiento y análisis. Los nodos reciben como respuesta comandos o instrucciones de control que producen cambios en sus actuadores. Este enfoque conduce a una alta latencia en la comunicación, un flujo de datos ascendente alto y mayores costos en los centros de datos en la nube. Adicionalmente, muchos sistemas de Internet de las Cosas experimentan problemas de conectividad que provocan la pérdida de datos si no existe un almacenamiento local.
 
 Los nodos basados en procesadores de bajo consumo tienen limitaciones de procesador y memoria, pero al borde de la red tienen la capacidad de almacenar datos, reducir la latencia, aumentar la confiabilidad y permitir la toma de decisiones.
 
@@ -10,7 +10,7 @@ Los nodos basados en procesadores de bajo consumo tienen limitaciones de procesa
 
 Se pretende desarrollar un  sistema de almacenamiento distribuido, transparente al usuario final, donde los datos residan al borde de la red y en un servicio de almacenamiento en la nube. Las solicitudes al sistema pueden provenir de usuarios locales a un nodo al borde o de usuarios conectados a uno o varios servidores despachadores ubicados en la nube (o al borde). 
 
-Los nodos señales y actuadores son responsables de la transmisión de datos a los nodos al borde y del cambio de estado de los actuadores a petición de los nodos al borde. Para la comunicación entre los nodos al borde y los nodos señales y actuadores se pueden utlizar los protocolos CoAP, HTTP, MQTT o NATS.
+Los nodos sensores y actuadores son responsables de la transmisión de datos a los nodos al borde y del cambio de estado de los actuadores a petición de los nodos al borde. Para la comunicación entre los nodos al borde y los nodos sensores y actuadores se pueden utlizar los protocolos CoAP, HTTP, MQTT o NATS.
 
 Cada nodo al borde, equipado con una base de datos, un broker MQTT y un broker NATS se encarga de capturar y almacenar los datos enviados por los nodos sensores y actuadores como series y ofrece un motor de reglas que permite modificar el estado de los actuadores.
 

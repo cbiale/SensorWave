@@ -8,11 +8,12 @@ import (
 	"time"
 
 	edge "github.com/cbiale/sensorwave/edge"
+	"github.com/cbiale/sensorwave/tipos"
 )
 
 func main() {
 	// Crear una instancia de ManagerEdge
-	manager, err := edge.Crear("test_series.db", "localhost", "4222")
+	manager, err := edge.Crear("test_series.db", "localhost", "4222", "")
 	if err != nil {
 		fmt.Println("Error al crear ManagerEdge:", err)
 		return
@@ -30,38 +31,38 @@ func main() {
 
 	series := []edge.Serie{
 		{
-			NombreSerie:      "sensor1.temperatura",
-			TipoDatos:        edge.TipoNumerico,
-			CompresionBloque: edge.LZ4,
-			CompresionBytes:  edge.DeltaDelta,
+			Path:             "sensor1.temperatura",
+			TipoDatos:        tipos.TipoNumerico,
+			CompresionBloque: tipos.LZ4,
+			CompresionBytes:  tipos.DeltaDelta,
 			TamañoBloque:     10,
 		},
 		{
-			NombreSerie:      "sensor1.humedad",
-			TipoDatos:        edge.TipoNumerico,
-			CompresionBloque: edge.ZSTD,
-			CompresionBytes:  edge.DeltaDelta,
+			Path:             "sensor1.humedad",
+			TipoDatos:        tipos.TipoNumerico,
+			CompresionBloque: tipos.ZSTD,
+			CompresionBytes:  tipos.DeltaDelta,
 			TamañoBloque:     20,
 		},
 		{
-			NombreSerie:      "sensor1.presion",
-			TipoDatos:        edge.TipoNumerico,
-			CompresionBloque: edge.Snappy,
-			CompresionBytes:  edge.RLE,
+			Path:             "sensor1.presion",
+			TipoDatos:        tipos.TipoNumerico,
+			CompresionBloque: tipos.Snappy,
+			CompresionBytes:  tipos.RLE,
 			TamañoBloque:     15,
 		},
 		{
-			NombreSerie:      "sensor2.temperatura",
-			TipoDatos:        edge.TipoNumerico,
-			CompresionBloque: edge.Gzip,
-			CompresionBytes:  edge.DeltaDelta,
+			Path:             "sensor2.temperatura",
+			TipoDatos:        tipos.TipoNumerico,
+			CompresionBloque: tipos.Gzip,
+			CompresionBytes:  tipos.DeltaDelta,
 			TamañoBloque:     30,
 		},
 		{
-			NombreSerie:      "sensor1.estado",
-			TipoDatos:        edge.TipoCategorico,
-			CompresionBloque: edge.LZ4,
-			CompresionBytes:  edge.RLE,
+			Path:             "sensor1.estado",
+			TipoDatos:        tipos.TipoCategorico,
+			CompresionBloque: tipos.LZ4,
+			CompresionBytes:  tipos.RLE,
 			TamañoBloque:     10,
 		},
 	}
@@ -69,11 +70,11 @@ func main() {
 	for _, serie := range series {
 		err := manager.CrearSerie(serie)
 		if err != nil {
-			fmt.Printf("Error al crear serie %s: %v\n", serie.NombreSerie, err)
+			fmt.Printf("Error al crear serie %s: %v\n", serie.Path, err)
 			return
 		}
 		fmt.Printf("Serie creada: %s (Tipo: %s, Bloque: %v, Valores: %v, Tamaño: %d)\n",
-			serie.NombreSerie, serie.TipoDatos, serie.CompresionBloque, serie.CompresionBytes, serie.TamañoBloque)
+			serie.Path, serie.TipoDatos, serie.CompresionBloque, serie.CompresionBytes, serie.TamañoBloque)
 	}
 
 	// Test 2: Insertar datos con patrones diferentes
@@ -255,9 +256,9 @@ func main() {
 
 	// Crear una serie con muchos bloques para demostrar la optimización
 	testSerie := edge.Serie{
-		NombreSerie:      "sensor.test.optimizacion",
-		CompresionBloque: edge.TipoCompresionBloque(edge.LZ4),
-		CompresionBytes:  edge.TipoCompresionValores(edge.DeltaDelta),
+		Path:             "sensor.test.optimizacion",
+		CompresionBloque: tipos.LZ4,
+		CompresionBytes:  tipos.DeltaDelta,
 		TamañoBloque:     5, // Bloques pequeños para crear muchos bloques
 	}
 
@@ -322,10 +323,10 @@ func main() {
 
 	// Crear serie sin especificar tipo (TipoMixto por defecto)
 	serieInferencia := edge.Serie{
-		NombreSerie:      "sensor.inferencia.automatica",
-		TipoDatos:        edge.TipoMixto, // Tipo mixto permite inferencia
-		CompresionBloque: edge.LZ4,
-		CompresionBytes:  edge.DeltaDelta,
+		Path:             "sensor.inferencia.automatica",
+		TipoDatos:        tipos.TipoMixto, // Tipo mixto permite inferencia
+		CompresionBloque: tipos.LZ4,
+		CompresionBytes:  tipos.DeltaDelta,
 		TamañoBloque:     5,
 	}
 
@@ -366,10 +367,10 @@ func main() {
 	fmt.Println("\nPrueba de inferencia categórica:")
 
 	serieCategórica := edge.Serie{
-		NombreSerie:      "sensor.inferencia.categorica",
-		TipoDatos:        edge.TipoMixto,
-		CompresionBloque: edge.LZ4,
-		CompresionBytes:  edge.RLE,
+		Path:             "sensor.inferencia.categorica",
+		TipoDatos:        tipos.TipoMixto,
+		CompresionBloque: tipos.LZ4,
+		CompresionBytes:  tipos.RLE,
 		TamañoBloque:     5,
 	}
 

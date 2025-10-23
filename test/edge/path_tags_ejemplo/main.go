@@ -6,12 +6,12 @@ import (
 	"time"
 
 	"github.com/cbiale/sensorwave/edge"
+	"github.com/cbiale/sensorwave/tipos"
 )
 
 func main() {
-	fmt.Println("=== EJEMPLO DE USO: MODELO PATH + TAGS ===\n")
 
-	manager, err := edge.Crear("ejemplo_path_tags.db")
+	manager, err := edge.Crear("ejemplo_path_tags.db", "localhost", "4222", "")
 	if err != nil {
 		fmt.Println("Error al crear manager:", err)
 		return
@@ -21,7 +21,7 @@ func main() {
 		os.Remove("ejemplo_path_tags.db")
 	}()
 
-	fmt.Println("✓ Manager Edge inicializado\n")
+	fmt.Println("✓ Manager Edge inicializado")
 
 	// ===== CREAR SERIES CON PATH Y TAGS =====
 	fmt.Println("--- Creando series con Path y Tags ---")
@@ -35,9 +35,9 @@ func main() {
 			"zona":      "produccion",
 			"edificio":  "norte",
 		},
-		TipoDatos:        edge.TipoNumerico,
-		CompresionBloque: edge.LZ4,
-		CompresionBytes:  edge.DeltaDelta,
+		TipoDatos:        tipos.TipoNumerico,
+		CompresionBloque: tipos.LZ4,
+		CompresionBytes:  tipos.DeltaDelta,
 		TamañoBloque:     100,
 	}
 	manager.CrearSerie(serie1)
@@ -53,9 +53,9 @@ func main() {
 			"zona":      "produccion",
 			"edificio":  "norte",
 		},
-		TipoDatos:        edge.TipoNumerico,
-		CompresionBloque: edge.LZ4,
-		CompresionBytes:  edge.DeltaDelta,
+		TipoDatos:        tipos.TipoNumerico,
+		CompresionBloque: tipos.LZ4,
+		CompresionBytes:  tipos.DeltaDelta,
 		TamañoBloque:     100,
 	}
 	manager.CrearSerie(serie2)
@@ -70,9 +70,9 @@ func main() {
 			"zona":      "almacen",
 			"edificio":  "norte",
 		},
-		TipoDatos:        edge.TipoNumerico,
-		CompresionBloque: edge.ZSTD,
-		CompresionBytes:  edge.DeltaDelta,
+		TipoDatos:        tipos.TipoNumerico,
+		CompresionBloque: tipos.ZSTD,
+		CompresionBytes:  tipos.DeltaDelta,
 		TamañoBloque:     100,
 	}
 	manager.CrearSerie(serie3)
@@ -87,9 +87,9 @@ func main() {
 			"zona":      "oficinas",
 			"edificio":  "sur",
 		},
-		TipoDatos:        edge.TipoNumerico,
-		CompresionBloque: edge.Snappy,
-		CompresionBytes:  edge.DeltaDelta,
+		TipoDatos:        tipos.TipoNumerico,
+		CompresionBloque: tipos.Snappy,
+		CompresionBytes:  tipos.DeltaDelta,
 		TamañoBloque:     100,
 	}
 	manager.CrearSerie(serie4)
@@ -119,14 +119,14 @@ func main() {
 		timestamp := now.Add(time.Duration(i) * time.Second).UnixNano()
 		manager.Insertar("dispositivo_003/temperatura", timestamp, 22.0+float64(i)*0.15)
 	}
-	fmt.Println("✓ Insertados 10 datos para dispositivo_003\n")
+	fmt.Println("✓ Insertados 10 datos para dispositivo_003")
 
 	// ===== CONSULTAS POR DISPOSITIVO =====
 	fmt.Println("--- Consulta 1: Todas las series de dispositivo_001 ---")
 	seriesDisp1, err := manager.ListarSeriesPorDispositivo("dispositivo_001")
 	if err != nil {
 		fmt.Println("Error:", err)
-	} else {
+ 	} else {
 		fmt.Printf("Encontradas %d series:\n", len(seriesDisp1))
 		for _, serie := range seriesDisp1 {
 			fmt.Printf("  - %s (tags: %v)\n", serie.Path, serie.Tags)
@@ -181,7 +181,7 @@ func main() {
 
 	// ===== CONSULTAR DATOS CON RANGO TEMPORAL =====
 	fmt.Println("--- Consulta 5: Datos de temperatura de dispositivo_001 ---")
-	mediciones, err := manager.ConsultarRangoPorPath(
+	mediciones, err := manager.ConsultarRango(
 		"dispositivo_001/temperatura",
 		now.Add(-1*time.Minute),
 		now.Add(1*time.Minute),

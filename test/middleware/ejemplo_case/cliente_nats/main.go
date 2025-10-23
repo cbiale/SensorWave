@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"math/rand"
 	"time"
 
@@ -12,7 +13,11 @@ var cliente *sw_cliente.ClienteNATS
 
 func main() {
 	// crea un nuevo cliente
-	cliente = sw_cliente.Conectar("localhost", "4222")
+	var err error
+	cliente, err = sw_cliente.Conectar("localhost", "4222")
+	if err != nil {
+		log.Fatal("Error al conectar:", err)
+	}
 	defer cliente.Desconectar()
 
 	for i := 0; i < 5; i++ {

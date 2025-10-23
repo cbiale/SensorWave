@@ -1,12 +1,16 @@
 package edge
 
 import (
+	"bytes"
+	"encoding/gob"
 	"fmt"
 	"log"
 	"math"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 type TipoOperador string
@@ -81,10 +85,10 @@ type MotorReglas struct {
 	mu             sync.RWMutex
 	logger         *log.Logger
 	manager        *ManagerEdge // Referencia al manager padre (para acceso a datos)
+	db             *pebble.DB   // Conexión a PebbleDB para persistencia de reglas
 }
 
-// nuevoMotorReglasIntegrado crea un MotorReglas integrado con ManagerEdge
-func nuevoMotorReglasIntegrado(manager *ManagerEdge) *MotorReglas {
+func nuevoMotorReglasIntegrado(manager *ManagerEdge, db *pebble.DB) *MotorReglas {
 	motor := &MotorReglas{
 		reglas:         make(map[string]*Regla),
 		datos:          make(map[string][]DatoTemporal),
@@ -93,7 +97,8 @@ func nuevoMotorReglasIntegrado(manager *ManagerEdge) *MotorReglas {
 		maxDatosCache:  1000,
 		tiempoLimpieza: 5 * time.Minute,
 		logger:         log.New(log.Writer(), "[MotorReglas] ", log.LstdFlags|log.Lshortfile),
-		manager:        manager, // Referencia al manager padre
+		manager:        manager,
+		db:             db,
 	}
 
 	motor.registrarEjecutoresPorDefecto()
@@ -193,6 +198,53 @@ func (mr *MotorReglas) evaluarCondicionesRegla(regla *Regla, timestamp time.Time
 	return true
 }
 
+// calcularAgregacionSimple calcula una agregación sobre un slice de valores
+func calcularAgregacionSimple(valores []float64, agregacion TipoAgregacion) (float64, error) {
+	if len(valores) == 0 {
+		return 0, fmt.Errorf("no hay valores para agregar")
+	}
+
+	switch agregacion {
+	case AgregacionPromedio:
+		suma := 0.0
+		for _, v := range valores {
+			suma += v
+		}
+		return suma / float64(len(valores)), nil
+
+	case AgregacionMaximo:
+		max := valores[0]
+		for _, v := range valores[1:] {
+			if v > max {
+				max = v
+			}
+		}
+		return max, nil
+
+	case AgregacionMinimo:
+		min := valores[0]
+		for _, v := range valores[1:] {
+			if v < min {
+				min = v
+			}
+		}
+		return min, nil
+
+	case AgregacionSuma:
+		suma := 0.0
+		for _, v := range valores {
+			suma += v
+		}
+		return suma, nil
+
+	case AgregacionCount:
+		return float64(len(valores)), nil
+
+	default:
+		return 0, fmt.Errorf("tipo de agregación no soportado: %s", agregacion)
+	}
+}
+
 func (mr *MotorReglas) evaluarCondicion(condicion *Condicion, timestamp time.Time) bool {
 	tiempoInicio := timestamp.Add(-condicion.VentanaT)
 
@@ -219,87 +271,36 @@ func (mr *MotorReglas) evaluarCondicion(condicion *Condicion, timestamp time.Tim
 }
 
 func (mr *MotorReglas) calcularAgregacion(series []string, agregacion TipoAgregacion, tiempoInicio, tiempoFin time.Time) (float64, error) {
-	var valores []float64
+	var valoresPorSerie []float64
 
+	// Calcular agregación POR CADA serie
 	for _, serie := range series {
 		datosValidos := mr.obtenerDatosEnVentana(serie, tiempoInicio, tiempoFin)
 		if len(datosValidos) == 0 {
 			continue
 		}
 
-		var valorSerie float64
-		switch agregacion {
-		case AgregacionPromedio:
-			suma := 0.0
-			for _, dato := range datosValidos {
-				suma += dato.Valor
-			}
-			valorSerie = suma / float64(len(datosValidos))
-		case AgregacionMaximo:
-			valorSerie = datosValidos[0].Valor
-			for _, dato := range datosValidos[1:] {
-				if dato.Valor > valorSerie {
-					valorSerie = dato.Valor
-				}
-			}
-		case AgregacionMinimo:
-			valorSerie = datosValidos[0].Valor
-			for _, dato := range datosValidos[1:] {
-				if dato.Valor < valorSerie {
-					valorSerie = dato.Valor
-				}
-			}
-		case AgregacionSuma:
-			for _, dato := range datosValidos {
-				valorSerie += dato.Valor
-			}
-		case AgregacionCount:
-			valorSerie = float64(len(datosValidos))
-		default:
-			return 0, fmt.Errorf("tipo de agregación no soportado: %s", agregacion)
+		// Extraer valores de los datos temporales
+		valores := make([]float64, len(datosValidos))
+		for i, dato := range datosValidos {
+			valores[i] = dato.Valor
 		}
 
-		valores = append(valores, valorSerie)
+		// Usar helper para calcular agregación de esta serie
+		valorSerie, err := calcularAgregacionSimple(valores, agregacion)
+		if err != nil {
+			continue
+		}
+
+		valoresPorSerie = append(valoresPorSerie, valorSerie)
 	}
 
-	if len(valores) == 0 {
+	if len(valoresPorSerie) == 0 {
 		return 0, fmt.Errorf("no hay datos disponibles para la agregación")
 	}
 
-	switch agregacion {
-	case AgregacionPromedio:
-		suma := 0.0
-		for _, v := range valores {
-			suma += v
-		}
-		return suma / float64(len(valores)), nil
-	case AgregacionMaximo:
-		max := valores[0]
-		for _, v := range valores[1:] {
-			if v > max {
-				max = v
-			}
-		}
-		return max, nil
-	case AgregacionMinimo:
-		min := valores[0]
-		for _, v := range valores[1:] {
-			if v < min {
-				min = v
-			}
-		}
-		return min, nil
-	case AgregacionSuma:
-		suma := 0.0
-		for _, v := range valores {
-			suma += v
-		}
-		return suma, nil
-	case AgregacionCount:
-		return float64(len(valores)), nil
-	default:
-		return 0, fmt.Errorf("tipo de agregación no soportado: %s", agregacion)
-	}
+	// Usar helper nuevamente para agregar entre series
+	return calcularAgregacionSimple(valoresPorSerie, agregacion)
 }
 
 func (mr *MotorReglas) obtenerValorSerie(serie string, tiempoInicio, tiempoFin time.Time) (float64, error) {
@@ -633,4 +634,168 @@ func (mr *MotorReglas) resolverSeriesPorCondicion(condicion *Condicion) []string
 	}
 
 	return seriesResueltas
+}
+
+// AgregarReglaEnMemoria agrega una regla al motor sin persistencia
+func (mr *MotorReglas) AgregarReglaEnMemoria(regla *Regla) error {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+
+	mr.reglas[regla.ID] = regla
+	return nil
+}
+
+// EliminarReglaEnMemoria elimina una regla del motor sin persistencia
+func (mr *MotorReglas) EliminarReglaEnMemoria(id string) error {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+
+	if _, exists := mr.reglas[id]; !exists {
+		return fmt.Errorf("regla '%s' no encontrada", id)
+	}
+
+	delete(mr.reglas, id)
+	return nil
+}
+
+// ActualizarReglaEnMemoria actualiza una regla en el motor sin persistencia
+func (mr *MotorReglas) ActualizarReglaEnMemoria(regla *Regla) error {
+	mr.mu.Lock()
+	defer mr.mu.Unlock()
+
+	if _, exists := mr.reglas[regla.ID]; !exists {
+		return fmt.Errorf("regla '%s' no encontrada", regla.ID)
+	}
+
+	mr.reglas[regla.ID] = regla
+	return nil
+}
+
+func generarClaveRegla(id string) []byte {
+	return []byte("reglas/" + id)
+}
+
+func serializarRegla(regla *Regla) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := gob.NewEncoder(&buffer)
+	err := encoder.Encode(regla)
+	if err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
+}
+
+func deserializarRegla(data []byte) (*Regla, error) {
+	var regla Regla
+	buffer := bytes.NewBuffer(data)
+	decoder := gob.NewDecoder(buffer)
+	err := decoder.Decode(&regla)
+	if err != nil {
+		return nil, err
+	}
+	return &regla, nil
+}
+
+func (mr *MotorReglas) cargarReglasExistentes() error {
+	if mr.db == nil {
+		return nil
+	}
+
+	iter, err := mr.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte("reglas/"),
+		UpperBound: []byte("reglas0"),
+	})
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+
+	for iter.First(); iter.Valid(); iter.Next() {
+		regla, err := deserializarRegla(iter.Value())
+		if err != nil {
+			continue
+		}
+
+		mr.AgregarReglaEnMemoria(regla)
+	}
+
+	return iter.Error()
+}
+
+func (mr *MotorReglas) AgregarRegla(regla *Regla) error {
+	if regla == nil {
+		return fmt.Errorf("regla no puede ser nil")
+	}
+
+	if err := mr.validarRegla(regla); err != nil {
+		return fmt.Errorf("regla inválida: %v", err)
+	}
+
+	if mr.db != nil {
+		key := generarClaveRegla(regla.ID)
+		reglaBytes, err := serializarRegla(regla)
+		if err != nil {
+			return fmt.Errorf("error al serializar regla: %v", err)
+		}
+
+		err = mr.db.Set(key, reglaBytes, pebble.Sync)
+		if err != nil {
+			return fmt.Errorf("error al guardar regla: %v", err)
+		}
+	}
+
+	regla.Activa = true
+	if err := mr.AgregarReglaEnMemoria(regla); err != nil {
+		return err
+	}
+
+	mr.logger.Printf("Regla '%s' agregada exitosamente", regla.ID)
+	return nil
+}
+
+func (mr *MotorReglas) EliminarRegla(id string) error {
+	if mr.db != nil {
+		key := generarClaveRegla(id)
+		err := mr.db.Delete(key, pebble.Sync)
+		if err != nil {
+			return fmt.Errorf("error al eliminar regla de DB: %v", err)
+		}
+	}
+
+	if err := mr.EliminarReglaEnMemoria(id); err != nil {
+		return err
+	}
+
+	mr.logger.Printf("Regla '%s' eliminada", id)
+	return nil
+}
+
+func (mr *MotorReglas) ActualizarRegla(regla *Regla) error {
+	if regla == nil {
+		return fmt.Errorf("regla no puede ser nil")
+	}
+
+	if err := mr.validarRegla(regla); err != nil {
+		return fmt.Errorf("regla inválida: %v", err)
+	}
+
+	if mr.db != nil {
+		key := generarClaveRegla(regla.ID)
+		reglaBytes, err := serializarRegla(regla)
+		if err != nil {
+			return fmt.Errorf("error al serializar regla: %v", err)
+		}
+
+		err = mr.db.Set(key, reglaBytes, pebble.Sync)
+		if err != nil {
+			return fmt.Errorf("error al actualizar regla en DB: %v", err)
+		}
+	}
+
+	if err := mr.ActualizarReglaEnMemoria(regla); err != nil {
+		return err
+	}
+
+	mr.logger.Printf("Regla '%s' actualizada", regla.ID)
+	return nil
 }

@@ -1,4 +1,8 @@
-package edge
+package compresor
+
+import (
+	"github.com/cbiale/sensorwave/tipos"
+)
 
 // CompressorBloque define la interfaz para compresores de bloques (nivel 2)
 type CompressorBloque interface {
@@ -7,17 +11,17 @@ type CompressorBloque interface {
 }
 
 // obtenerCompressorBloque factory para crear compresores de bloques
-func (me *ManagerEdge) obtenerCompressorBloque(tipo TipoCompresionBloque) CompressorBloque {
+func ObtenerCompressorBloque(tipo tipos.TipoCompresionBloque) CompressorBloque {
 	switch tipo {
-	case LZ4:
+	case tipos.LZ4:
 		return &CompressorLZ4{}
-	case ZSTD:
+	case tipos.ZSTD:
 		return &CompressorZSTD{}
-	case Snappy:
+	case tipos.Snappy:
 		return &CompressorSnappy{}
-	case Gzip:
+	case tipos.Gzip:
 		return &CompressorGzip{}
-	case Ninguna:
+	case tipos.Ninguna:
 		return &CompressorBloqueNinguno{}
 	default:
 		return &CompressorBloqueNinguno{}
@@ -25,7 +29,7 @@ func (me *ManagerEdge) obtenerCompressorBloque(tipo TipoCompresionBloque) Compre
 }
 
 // obtenerCompressorGzip devuelve el compresor Gzip (como alternativa)
-func (me *ManagerEdge) obtenerCompressorGzip() CompressorBloque {
+func obtenerCompressorGzip() CompressorBloque {
 	return &CompressorGzip{}
 }
 

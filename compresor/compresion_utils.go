@@ -1,9 +1,11 @@
-package edge
+package compresor
 
 import (
 	"fmt"
 	"math"
 	"unsafe"
+
+	"github.com/cbiale/sensorwave/tipos"
 )
 
 // Utilidades para conversión de bytes
@@ -95,7 +97,7 @@ func bytesToFloat32(bytes []byte) float32 {
 }
 
 // extraerValores extrae los valores de un slice de mediciones
-func extraerValores(mediciones []Medicion) []interface{} {
+func ExtraerValores(mediciones []tipos.Medicion) []interface{} {
 	valores := make([]interface{}, len(mediciones))
 	for i, medicion := range mediciones {
 		valores[i] = medicion.Valor
@@ -104,7 +106,7 @@ func extraerValores(mediciones []Medicion) []interface{} {
 }
 
 // extraerTiempos extrae los tiempos de un slice de mediciones
-func extraerTiempos(mediciones []Medicion) []int64 {
+func ExtraerTiempos(mediciones []tipos.Medicion) []int64 {
 	tiempos := make([]int64, len(mediciones))
 	for i, medicion := range mediciones {
 		tiempos[i] = medicion.Tiempo
@@ -113,7 +115,7 @@ func extraerTiempos(mediciones []Medicion) []int64 {
 }
 
 // combinarDatos combina datos de tiempo y valores comprimidos con metadata
-func combinarDatos(tiemposComprimidos, valoresComprimidos []byte) []byte {
+func CombinarDatos(tiemposComprimidos, valoresComprimidos []byte) []byte {
 	// Header: 4 bytes tamaño tiempos + 4 bytes tamaño valores
 	tamañoTiempos := len(tiemposComprimidos)
 	tamañoValores := len(valoresComprimidos)
@@ -142,7 +144,7 @@ func combinarDatos(tiemposComprimidos, valoresComprimidos []byte) []byte {
 }
 
 // separarDatos separa los datos combinados en tiempos y valores
-func separarDatos(datos []byte) ([]byte, []byte, error) {
+func SepararDatos(datos []byte) ([]byte, []byte, error) {
 	if len(datos) < 8 {
 		return nil, nil, fmt.Errorf("datos insuficientes para separar")
 	}

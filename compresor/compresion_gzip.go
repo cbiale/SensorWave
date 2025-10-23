@@ -1,4 +1,4 @@
-package edge
+package compresor
 
 import (
 	"bytes"

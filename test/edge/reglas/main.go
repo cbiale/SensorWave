@@ -10,10 +10,9 @@ import (
 )
 
 func main() {
-	fmt.Println("=== TEST COMPLETO DE MOTOR DE REGLAS ===")
 
 	// Crear ManagerEdge con motor de reglas integrado
-	manager, err := edge.Crear("test_reglas.db", "localhost", "4222")
+	manager, err := edge.Crear("test_reglas.db", "localhost", "4222", "")
 	if err != nil {
 		fmt.Printf("Error al crear ManagerEdge: %v\n", err)
 		return

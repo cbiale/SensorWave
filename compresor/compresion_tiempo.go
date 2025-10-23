@@ -1,15 +1,18 @@
-package edge
+package compresor
 
-import "fmt"
+import (
+	"fmt"
+	"github.com/cbiale/sensorwave/tipos"
+)
 
 // compresionDeltaDeltaTiempo aplica compresión DeltaDelta específicamente para tiempos
 // Siempre usa esta función para comprimir tiempos, independiente de la configuración de la serie
-func (me *ManagerEdge) compresionDeltaDeltaTiempo(mediciones []Medicion) []byte {
+func CompresionDeltaDeltaTiempo(mediciones []tipos.Medicion) []byte {
 	if len(mediciones) == 0 {
 		return []byte{}
 	}
 
-	tiempos := extraerTiempos(mediciones)
+	tiempos := ExtraerTiempos(mediciones)
 
 	// Buffer para almacenar los datos comprimidos
 	resultado := make([]byte, 0)
@@ -72,7 +75,7 @@ func (me *ManagerEdge) compresionDeltaDeltaTiempo(mediciones []Medicion) []byte 
 }
 
 // descompresionDeltaDeltaTiempo descomprime tiempos usando DeltaDelta
-func (me *ManagerEdge) descompresionDeltaDeltaTiempo(datos []byte) ([]int64, error) {
+func DescompresionDeltaDeltaTiempo(datos []byte) ([]int64, error) {
 	if len(datos) == 0 {
 		return []int64{}, nil
 	}

@@ -33,6 +33,5 @@ Lenguajes de programación:
 Artefactos:
 - Middleware para obtener datos de sensores y actuadores al borde y para comunicar el borde con la nube.
 - Base de datos al borde de la red basada en Pebble
-- Base de datos en la nube usando MiniO
-- Servicio despachador de consultas en la nube
-- Base de datos en despachador basada en Pebble
+- Base de datos en la nube basada en FoundationDB
+- Servicio despachador de consultas en la nube sin estado

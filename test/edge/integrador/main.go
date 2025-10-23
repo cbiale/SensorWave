@@ -7,6 +7,7 @@ import (
 	"time"
 
 	edge "github.com/cbiale/sensorwave/edge"
+	"github.com/cbiale/sensorwave/tipos"
 )
 
 type EstadoSistema struct {
@@ -21,10 +22,9 @@ type EstadoSistema struct {
 }
 
 func main() {
-	fmt.Println("=== SISTEMA INTEGRADO DE AGRICULTURA INTELIGENTE ===")
-
+	
 	// Crear instancia de ManagerEdge
-	manager, err := edge.Crear("agricultura_inteligente.db", "localhost", "4222")
+	manager, err := edge.Crear("agricultura_inteligente.db", "localhost", "4222", "")
 	if err != nil {
 		fmt.Println("Error al crear ManagerEdge:", err)
 		return
@@ -110,10 +110,10 @@ func main() {
 	for i := 1; i <= 8; i++ {
 		nombreTemp := fmt.Sprintf("invernadero.zona%d.temperatura", i)
 		err = manager.CrearSerie(edge.Serie{
-			NombreSerie:      nombreTemp,
-			TipoDatos:        edge.TipoNumerico,
-			CompresionBloque: edge.LZ4,
-			CompresionBytes:  edge.DeltaDelta,
+			Path:             nombreTemp,
+			TipoDatos:        tipos.TipoNumerico,
+			CompresionBloque: tipos.LZ4,
+			CompresionBytes:  tipos.DeltaDelta,
 			TamañoBloque:     20,
 		})
 		if err != nil {
@@ -128,10 +128,10 @@ func main() {
 	for i := 1; i <= 8; i++ {
 		nombreHumedad := fmt.Sprintf("invernadero.zona%d.humedad_suelo", i)
 		err = manager.CrearSerie(edge.Serie{
-			NombreSerie:      nombreHumedad,
-			TipoDatos:        edge.TipoNumerico,
-			CompresionBloque: edge.ZSTD,
-			CompresionBytes:  edge.DeltaDelta,
+			Path:             nombreHumedad,
+			TipoDatos:        tipos.TipoNumerico,
+			CompresionBloque: tipos.ZSTD,
+			CompresionBytes:  tipos.DeltaDelta,
 			TamañoBloque:     20,
 		})
 		if err != nil {
@@ -153,10 +153,10 @@ func main() {
 	fmt.Println("Creando series de control ambiental...")
 	for _, nombre := range seriesAdicionales {
 		err = manager.CrearSerie(edge.Serie{
-			NombreSerie:      nombre,
-			TipoDatos:        edge.TipoNumerico,
-			CompresionBloque: edge.Snappy,
-			CompresionBytes:  edge.RLE,
+			Path:             nombre,
+			TipoDatos:        tipos.TipoNumerico,
+			CompresionBloque: tipos.Snappy,
+			CompresionBytes:  tipos.RLE,
 			TamañoBloque:     15,
 		})
 		if err != nil {

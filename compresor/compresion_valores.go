@@ -1,6 +1,10 @@
-package edge
+package compresor
 
-import "fmt"
+import 
+(
+	"fmt"
+	"github.com/cbiale/sensorwave/tipos"
+)
 
 // CompressorValor define la interfaz para compresores de valores (nivel 1)
 type CompressorValor interface {
@@ -9,15 +13,15 @@ type CompressorValor interface {
 }
 
 // obtenerCompressorValor factory para crear compresores de valores
-func (me *ManagerEdge) obtenerCompressorValor(tipo TipoCompresionValores) CompressorValor {
+func ObtenerCompressorValor(tipo tipos.TipoCompresionValores) CompressorValor {
 	switch tipo {
-	case DeltaDelta:
+	case tipos.DeltaDelta:
 		return &CompressorDeltaDeltaValores{}
-	case RLE:
+	case tipos.RLE:
 		return &CompressorRLE{}
-	case Bits:
+	case tipos.Bits:
 		return &CompressorBits{}
-	case SinCompresion:
+	case tipos.SinCompresion:
 		return &CompressorValoresNinguno{}
 	default:
 		return &CompressorValoresNinguno{}

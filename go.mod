@@ -5,6 +5,7 @@ go 1.23.0
 toolchain go1.23.10
 
 require (
+	github.com/apple/foundationdb/bindings/go v0.0.0-20251017175351-71be6227edc1
 	github.com/cockroachdb/pebble v1.1.0
 	github.com/eclipse/paho.mqtt.golang v1.5.0
 	github.com/google/uuid v1.6.0

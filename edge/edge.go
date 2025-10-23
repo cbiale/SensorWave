@@ -4,37 +4,33 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/gob"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	sw_cliente "github.com/cbiale/sensorwave/middleware/cliente_nats"
 	"github.com/cockroachdb/pebble"
 	"github.com/google/uuid"
+	"github.com/apple/foundationdb/bindings/go/src/fdb"
+
+	"github.com/cbiale/sensorwave/compresor"
+	"github.com/cbiale/sensorwave/tipos"
 )
 
 type ManagerEdge struct {
-	db              *pebble.DB              // Conexión a PebbleDB
-	cache           *Cache                  // Cache para configuraciones de series
-	buffers         sync.Map                // Buffers por serie (thread-safe map)
-	done            chan struct{}           // Canal para señalar cierre
-	counter         int                     // Contador para serie_id
-	mu              sync.RWMutex            // Mutex para proteger counter
-	motorReglas     *MotorReglas            // Motor de reglas integrado
-	nodeID          string                  // ID único persistente del nodo
-	cliente         *sw_cliente.ClienteNATS // Cliente NATS
-	direccionNATS   string                  // Dirección del servidor NATS
-	puertoNATS      string                  // Puerto del servidor NATS
-	reconectando    bool                    // Indica si está en proceso de reconexión
-	muConexion      sync.Mutex              // Mutex para proteger operaciones de conexión
-	ultimaSincro    time.Time               // Timestamp de última sincronización
-	muSincronizando sync.Mutex              // Mutex para evitar sincronizaciones concurrentes
+	db          *pebble.DB
+	fdbDatabase *fdb.Database
+	cache       *Cache
+	buffers     sync.Map
+	done        chan struct{}
+	counter     int
+	mu          sync.RWMutex
+	MotorReglas *MotorReglas
+	Cluster     *ClusterManager
+	nodeID      string
 }
 
 type Cache struct {
@@ -43,55 +39,22 @@ type Cache struct {
 }
 
 type Serie struct {
-	SerieId          int                   // ID de la serie en la base de datos
-	NombreSerie      string                // Nombre de la serie (deprecated, usar Path)
-	Path             string                // Path jerárquico: "dispositivo_001/temperatura"
-	Tags             map[string]string     // Tags: {"ubicacion": "sala1", "tipo": "DHT22"}
-	TipoDatos        TipoDatos             // Tipo de datos almacenados
-	CompresionBloque TipoCompresionBloque  // Compresión nivel bloque
-	CompresionBytes  TipoCompresionValores // Compresión nivel valores
-	TamañoBloque     int                   // Tamaño del bloque
-}
-
-type TipoCompresionBloque string
-
-const (
-	Ninguna TipoCompresionBloque = "Ninguna"
-	LZ4     TipoCompresionBloque = "LZ4"
-	ZSTD    TipoCompresionBloque = "ZSTD"
-	Snappy  TipoCompresionBloque = "Snappy"
-	Gzip    TipoCompresionBloque = "Gzip"
-)
-
-type TipoCompresionValores string
-
-const (
-	SinCompresion TipoCompresionValores = "SinCompresion"
-	DeltaDelta    TipoCompresionValores = "DeltaDelta"
-	RLE           TipoCompresionValores = "RLE"
-	Bits          TipoCompresionValores = "Bits"
-)
-
-type TipoDatos string
-
-const (
-	TipoNumerico   TipoDatos = "NUMERICO"
-	TipoCategorico TipoDatos = "CATEGORICO"
-	TipoMixto      TipoDatos = "MIXTO"
-)
-
-type Medicion struct {
-	Tiempo int64
-	Valor  interface{}
+	SerieId          int                  		 // ID de la serie en la base de datos
+	Path             string                		 // Path jerárquico: "dispositivo_001/temperatura"
+	Tags             map[string]string     		 // Tags: {"ubicacion": "sala1", "tipo": "DHT22"}
+	TipoDatos        tipos.TipoDatos			 // Tipo de datos almacenados
+	CompresionBloque tipos.TipoCompresionBloque  // Compresión nivel bloque
+	CompresionBytes  tipos.TipoCompresionValores // Compresión nivel valores
+	TamañoBloque     int                   		 // Tamaño del bloque
 }
 
 type SerieBuffer struct {
-	datos      []Medicion    // Arreglo con TamañoBloque elementos
-	serie      Serie         // Configuración de la serie
-	indice     int           // Índice actual en el buffer
-	mu         sync.Mutex    // Mutex para proteger el buffer
-	done       chan struct{} // Canal para señalar cierre del hilo
-	datosCanal chan Medicion // Canal para recibir nuevos datos
+	datos      []tipos.Medicion     // Arreglo con TamañoBloque elementos
+	serie      Serie         		// Configuración de la serie
+	indice     int           		// Índice actual en el buffer
+	mu         sync.Mutex   		// Mutex para proteger el buffer
+	done       chan struct{} 		// Canal para señalar cierre del hilo
+	datosCanal chan tipos.Medicion  // Canal para recibir nuevos datos
 }
 
 type SuscripcionNodo struct {
@@ -111,25 +74,31 @@ type Heartbeat struct {
 	Activo    bool      `json:"activo"`
 }
 
-// Crear inicializa el ManagerEdge con PebbleDB y la cache
-func Crear(nombre string, direccionNATS string, puertoNATS string) (ManagerEdge, error) {
+type SolicitudConsulta struct {
+	Serie        string    `json:"serie"`
+	TiempoInicio time.Time `json:"tiempo_inicio"`
+	TiempoFin    time.Time `json:"tiempo_fin"`
+}
+
+type RespuestaConsulta struct {
+	Mediciones []tipos.Medicion `json:"mediciones"`
+	Error      string     		`json:"error,omitempty"`
+}
+
+// Crear inicializa el ManagerEdge con PebbleDB, cache y FoundationDB
+func Crear(nombre string, direccionNATS string, puertoNATS string, nombreFDB string) (*ManagerEdge, error) {
 	db, err := pebble.Open(nombre, &pebble.Options{})
 	if err != nil {
-		return ManagerEdge{}, err
+		return &ManagerEdge{}, err
 	}
 
-	// Crear el manager con PebbleDB
 	manager := &ManagerEdge{
 		db: db,
 		cache: &Cache{
 			datos: make(map[string]Serie),
 		},
-		done:          make(chan struct{}),
-		counter:       0,
-		direccionNATS: direccionNATS,
-		puertoNATS:    puertoNATS,
-		reconectando:  false,
-		ultimaSincro:  time.Time{},
+		done:    make(chan struct{}),
+		counter: 0,
 	}
 
 	// Cargar o generar nodeID
@@ -138,11 +107,11 @@ func Crear(nombre string, direccionNATS string, puertoNATS string) (ManagerEdge,
 		manager.nodeID = generarNodeID()
 		err = db.Set([]byte("meta/node_id"), []byte(manager.nodeID), pebble.Sync)
 		if err != nil {
-			return ManagerEdge{}, fmt.Errorf("error al guardar node_id: %v", err)
+			return &ManagerEdge{}, fmt.Errorf("error al guardar node_id: %v", err)
 		}
 		log.Printf("Nuevo nodeID generado: %s", manager.nodeID)
 	} else if err != nil {
-		return ManagerEdge{}, fmt.Errorf("error al leer node_id: %v", err)
+		return &ManagerEdge{}, fmt.Errorf("error al leer node_id: %v", err)
 	} else {
 		manager.nodeID = string(nodeIDBytes)
 		closer.Close()
@@ -152,7 +121,7 @@ func Crear(nombre string, direccionNATS string, puertoNATS string) (ManagerEdge,
 	// Cargar contador de series desde PebbleDB
 	counterBytes, closer, err := db.Get([]byte("meta/counter"))
 	if err != nil && err != pebble.ErrNotFound {
-		return ManagerEdge{}, fmt.Errorf("error al leer contador: %v", err)
+		return &ManagerEdge{}, fmt.Errorf("error al leer contador: %v", err)
 	}
 	if err == nil {
 		if len(counterBytes) >= 4 {
@@ -164,40 +133,38 @@ func Crear(nombre string, direccionNATS string, puertoNATS string) (ManagerEdge,
 	// Cargar series existentes desde PebbleDB
 	err = manager.cargarSeriesExistentes()
 	if err != nil {
-		return ManagerEdge{}, fmt.Errorf("error al cargar series: %v", err)
+		return &ManagerEdge{}, fmt.Errorf("error al cargar series: %v", err)
 	}
 
-	// Inicializar motor de reglas integrado
-	manager.motorReglas = nuevoMotorReglasIntegrado(manager)
-	manager.motorReglas.IniciarLimpiezaAutomatica()
+	// Conectar a FoundationDB si se proporciona coordinador
+	if nombreFDB != "" {
+		// Inicializar FoundationDB
+		fdb.MustAPIVersion(730)
 
-	// Cargar reglas existentes desde PebbleDB
-	err = manager.cargarReglasExistentes()
-	if err != nil {
-		return ManagerEdge{}, fmt.Errorf("error al cargar reglas: %v", err)
-	}
+		db, err := fdb.OpenDatabase(nombreFDB)
+    	if err != nil {
+			manager.fdbDatabase = nil
+			log.Printf("Modo local: error al realizar conexión a FoundationDB")
+    	}
 
-	// Conectar a NATS (opcional - el nodo puede funcionar sin conexión)
-	cliente, err := sw_cliente.Conectar(direccionNATS, puertoNATS)
-	if err != nil {
-		log.Printf("ADVERTENCIA: Nodo edge funcionando en modo autónomo sin NATS: %v", err)
-		log.Printf("El nodo continuará operando localmente. Las funciones de cluster están deshabilitadas.")
-		manager.cliente = nil
-
-		go manager.intentarReconexionPeriodica()
+		manager.fdbDatabase = &db
+		log.Printf("Conectado a FoundationDB en %s", nombreFDB)
 	} else {
-		manager.cliente = cliente
-
-		if err := manager.sincronizarEstado(); err != nil {
-			log.Printf("Error al sincronizar estado inicial: %v", err)
-		}
-
-		go manager.enviarHeartbeat()
-
-		log.Printf("Nodo edge conectado al cluster vía NATS")
+		log.Printf("Modo local: sin conexión a FoundationDB")
 	}
 
-	return *manager, nil
+	manager.MotorReglas = nuevoMotorReglasIntegrado(manager, db)
+	manager.MotorReglas.IniciarLimpiezaAutomatica()
+
+	err = manager.MotorReglas.cargarReglasExistentes()
+	if err != nil {
+		return &ManagerEdge{}, fmt.Errorf("error al cargar reglas: %v", err)
+	}
+
+	manager.Cluster = nuevoClusterManager(manager, manager.nodeID, direccionNATS, puertoNATS, manager.done)
+	manager.Cluster.conectar()
+
+	return manager, nil
 }
 
 // generarNodeID genera un ID único para el nodo edge
@@ -246,11 +213,6 @@ func (me *ManagerEdge) cargarSeriesExistentes() error {
 			continue // Skip series con error de deserialización
 		}
 
-		// Retrocompatibilidad: si Path está vacío, usar NombreSerie
-		if config.Path == "" {
-			config.Path = config.NombreSerie
-		}
-
 		// Inicializar Tags si es nil
 		if config.Tags == nil {
 			config.Tags = make(map[string]string)
@@ -263,11 +225,11 @@ func (me *ManagerEdge) cargarSeriesExistentes() error {
 
 		// Crear buffer y goroutine para cada serie
 		serieBuffer := &SerieBuffer{
-			datos:      make([]Medicion, config.TamañoBloque),
+			datos:      make([]tipos.Medicion, config.TamañoBloque),
 			serie:      config,
 			indice:     0,
 			done:       make(chan struct{}),
-			datosCanal: make(chan Medicion, 100),
+			datosCanal: make(chan tipos.Medicion, 100),
 		}
 
 		me.buffers.Store(seriesPath, serieBuffer)
@@ -277,38 +239,13 @@ func (me *ManagerEdge) cargarSeriesExistentes() error {
 	return iter.Error()
 }
 
-// generarClaveSerie genera una clave PebbleDB para metadatos de serie
-func generarClaveSerie(nombreSerie string) []byte {
-	return []byte("series/" + nombreSerie)
-}
-
 // generarClaveSerieConPath genera una clave usando Path (nueva API)
 func generarClaveSerieConPath(path string) []byte {
 	return []byte("series/" + path)
 }
 
-// generarSeriesKey genera un identificador único para una serie basado en Path y Tags
-func generarSeriesKey(path string, tags map[string]string) string {
-	if tags == nil || len(tags) == 0 {
-		return path
-	}
-
-	keys := make([]string, 0, len(tags))
-	for k := range tags {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var parts []string
-	parts = append(parts, path)
-	for _, k := range keys {
-		parts = append(parts, fmt.Sprintf("%s=%s", k, tags[k]))
-	}
-	return strings.Join(parts, ",")
-}
-
 // generarClaveDatos genera una clave PebbleDB incluyendo el tipo de datos
-func generarClaveDatos(serieId int, tipoDatos TipoDatos, tiempoInicio, tiempoFin int64) []byte {
+func generarClaveDatos(serieId int, tipoDatos tipos.TipoDatos, tiempoInicio, tiempoFin int64) []byte {
 	key := fmt.Sprintf("data/%s/%010d/%020d_%020d", string(tipoDatos), serieId, tiempoInicio, tiempoFin)
 	return []byte(key)
 }
@@ -324,7 +261,7 @@ func serializarSerie(serie Serie) ([]byte, error) {
 	return buffer.Bytes(), nil
 }
 
-// Cerrar cierra la conexión a PebbleDB y todos los goroutines asociados
+// Cerrar cierra la conexión a PebbleDB, FoundationDB y todos los goroutines asociados
 func (me *ManagerEdge) Cerrar() error {
 	// Señalar a todos los goroutines que deben terminar
 	close(me.done)
@@ -336,9 +273,14 @@ func (me *ManagerEdge) Cerrar() error {
 		return true
 	})
 
-	// Desconectar cliente NATS
-	if me.cliente != nil {
-		me.cliente.Desconectar()
+	if me.Cluster != nil {
+		me.Cluster.cerrar()
+	}
+
+	// Cerrar conexión a FoundationDB si existe
+	if me.fdbDatabase != nil {
+		// TODO: Implementar cierre de FoundationDB cuando esté disponible
+		log.Printf("Cerrando conexión a FoundationDB")
 	}
 
 	return me.db.Close()
@@ -346,12 +288,8 @@ func (me *ManagerEdge) Cerrar() error {
 
 // CrearSerie crea una nueva serie si no existe. Si ya existe, no hace nada.
 func (me *ManagerEdge) CrearSerie(config Serie) error {
-	// Generar clave única basada en Path o NombreSerie (retrocompatibilidad)
+	// Generar clave única basada en Path
 	seriesKey := config.Path
-	if seriesKey == "" {
-		seriesKey = config.NombreSerie
-		config.Path = config.NombreSerie
-	}
 
 	// Inicializar Tags si es nil
 	if config.Tags == nil {
@@ -410,19 +348,18 @@ func (me *ManagerEdge) CrearSerie(config Serie) error {
 
 	// Crear buffer y goroutine para la nueva serie
 	buffer := &SerieBuffer{
-		datos:      make([]Medicion, config.TamañoBloque),
+		datos:      make([]tipos.Medicion, config.TamañoBloque),
 		serie:      config,
 		indice:     0,
 		done:       make(chan struct{}),
-		datosCanal: make(chan Medicion, 100),
+		datosCanal: make(chan tipos.Medicion, 100),
 	}
 
 	me.buffers.Store(seriesKey, buffer)
 	go me.manejarBuffer(buffer)
 
-	// Informar nueva serie al despachador
-	if me.cliente != nil {
-		if err := me.informarNuevaSerie(seriesKey, config.SerieId); err != nil {
+	if me.Cluster != nil {
+		if err := me.Cluster.InformarNuevaSerie(seriesKey, config.SerieId); err != nil {
 			log.Printf("Error al informar nueva serie: %v", err)
 		}
 	}
@@ -475,7 +412,7 @@ func (me *ManagerEdge) manejarBuffer(buffer *SerieBuffer) {
 				buffer.indice = 0
 				// Limpiar los datos (opcional, se sobreescribirán)
 				for i := range buffer.datos {
-					buffer.datos[i] = Medicion{}
+					buffer.datos[i] = tipos.Medicion{}
 				}
 			}
 			buffer.mu.Unlock()
@@ -493,7 +430,7 @@ func (me *ManagerEdge) Insertar(nombreSerie string, tiempo int64, dato interface
 	buffer := bufferInterface.(*SerieBuffer)
 
 	// Inferencia automática de tipo si no está definido
-	if buffer.serie.TipoDatos == TipoMixto || buffer.serie.TipoDatos == "" {
+	if buffer.serie.TipoDatos == tipos.TipoMixto || buffer.serie.TipoDatos == "" {
 		tipoInferido := inferirTipo(dato)
 		buffer.serie.TipoDatos = tipoInferido
 
@@ -503,7 +440,7 @@ func (me *ManagerEdge) Insertar(nombreSerie string, tiempo int64, dato interface
 		me.cache.mu.Unlock()
 
 		// Actualizar en PebbleDB
-		key := generarClaveSerie(nombreSerie)
+		key := generarClaveSerieConPath(nombreSerie)
 		serieBytes, err := serializarSerie(buffer.serie)
 		if err == nil {
 			me.db.Set(key, serieBytes, pebble.Sync)
@@ -517,7 +454,7 @@ func (me *ManagerEdge) Insertar(nombreSerie string, tiempo int64, dato interface
 	}
 
 	// Crear la medición con tiempo y valor
-	medicion := Medicion{
+	medicion := tipos.Medicion{
 		Tiempo: tiempo,
 		Valor:  dato,
 	}
@@ -532,32 +469,32 @@ func (me *ManagerEdge) Insertar(nombreSerie string, tiempo int64, dato interface
 }
 
 // inferirTipo determina el tipo de datos basado en el valor proporcionado
-func inferirTipo(valor interface{}) TipoDatos {
+func inferirTipo(valor interface{}) tipos.TipoDatos {
 	switch valor.(type) {
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
-		return TipoNumerico
+		return tipos.TipoNumerico
 	case string:
-		return TipoCategorico
+		return tipos.TipoCategorico
 	default:
-		return TipoMixto
+		return tipos.TipoMixto
 	}
 }
 
 // esCompatibleConTipo verifica si un valor es compatible con el tipo de serie
-func esCompatibleConTipo(valor interface{}, tipoDatos TipoDatos) bool {
+func esCompatibleConTipo(valor interface{}, tipoDatos tipos.TipoDatos) bool {
 	tipoValor := inferirTipo(valor)
 
 	switch tipoDatos {
-	case TipoNumerico:
-		return tipoValor == TipoNumerico
-	case TipoCategorico:
-		return tipoValor == TipoCategorico
-	case TipoMixto:
-		return tipoValor == TipoNumerico || tipoValor == TipoCategorico
+	case tipos.TipoNumerico:
+		return tipoValor == tipos.TipoNumerico
+	case tipos.TipoCategorico:
+		return tipoValor == tipos.TipoCategorico
+	case tipos.TipoMixto:
+		return tipoValor == tipos.TipoNumerico || tipoValor == tipos.TipoCategorico
 	case "": // Series sin tipo definido (retrocompatibilidad)
 		return true // Acepta cualquier tipo si no está definido
 	default:
-		return tipoDatos == TipoMixto // Por defecto asumir mixto
+		return tipoDatos == tipos.TipoMixto // Por defecto asumir mixto
 	}
 }
 
@@ -595,7 +532,7 @@ func (me *ManagerEdge) deberiaSkipearBloque(key string, tiempoInicio, tiempoFin 
 
 // ConsultarRango consulta mediciones de una serie dentro de un rango de tiempo
 // y descomprime los datos antes de retornarlos
-func (me *ManagerEdge) ConsultarRango(nombreSerie string, tiempoInicio, tiempoFin time.Time) ([]Medicion, error) {
+func (me *ManagerEdge) ConsultarRango(nombreSerie string, tiempoInicio, tiempoFin time.Time) ([]tipos.Medicion, error) {
 	// Convertir los tiempos a Unix timestamp (en nanosegundos)
 	tiempoInicioUnix := tiempoInicio.UnixNano()
 	tiempoFinUnix := tiempoFin.UnixNano()
@@ -605,7 +542,7 @@ func (me *ManagerEdge) ConsultarRango(nombreSerie string, tiempoInicio, tiempoFi
 		return nil, fmt.Errorf("serie no encontrada: %s", nombreSerie)
 	}
 
-	var resultados []Medicion
+	var resultados []tipos.Medicion
 
 	// Crear rangos de búsqueda para iterar sobre los datos de la serie
 	keyPrefix := fmt.Sprintf("data/%s/%010d/", string(serie.TipoDatos), serie.SerieId)
@@ -674,28 +611,28 @@ func (me *ManagerEdge) ConsultarRango(nombreSerie string, tiempoInicio, tiempoFi
 
 // descomprimirBloque descomprime un bloque de datos usando el proceso inverso
 // al de comprimirYAlmacenar
-func (me *ManagerEdge) descomprimirBloque(datosComprimidos []byte, serie Serie) ([]Medicion, error) {
+func (me *ManagerEdge) descomprimirBloque(datosComprimidos []byte, serie Serie) ([]tipos.Medicion, error) {
 	// NIVEL 2: Descompresión de bloque
-	compresorBloque := me.obtenerCompressorBloque(serie.CompresionBloque)
+	compresorBloque := compresor.ObtenerCompressorBloque(serie.CompresionBloque)
 	bloqueDescomprimido, err := compresorBloque.Descomprimir(datosComprimidos)
 	if err != nil {
 		return nil, fmt.Errorf("error en descompresión de bloque: %v", err)
 	}
 
 	// NIVEL 1: Separar datos de tiempos y valores
-	tiemposComprimidos, valoresComprimidos, err := separarDatos(bloqueDescomprimido)
+	tiemposComprimidos, valoresComprimidos, err := compresor.SepararDatos(bloqueDescomprimido)
 	if err != nil {
 		return nil, fmt.Errorf("error al separar datos: %v", err)
 	}
 
 	// Descomprimir tiempos usando DeltaDelta
-	tiempos, err := me.descompresionDeltaDeltaTiempo(tiemposComprimidos)
+	tiempos, err := compresor.DescompresionDeltaDeltaTiempo(tiemposComprimidos)
 	if err != nil {
 		return nil, fmt.Errorf("error al descomprimir tiempos: %v", err)
 	}
 
 	// Descomprimir valores usando el compresor configurado para la serie
-	compresorValor := me.obtenerCompressorValor(serie.CompresionBytes)
+	compresorValor := compresor.ObtenerCompressorValor(serie.CompresionBytes)
 	valores, err := compresorValor.Descomprimir(valoresComprimidos)
 	if err != nil {
 		return nil, fmt.Errorf("error al descomprimir valores: %v", err)
@@ -707,9 +644,9 @@ func (me *ManagerEdge) descomprimirBloque(datosComprimidos []byte, serie Serie) 
 	}
 
 	// Reconstruir las mediciones
-	mediciones := make([]Medicion, len(tiempos))
+	mediciones := make([]tipos.Medicion, len(tiempos))
 	for i := 0; i < len(tiempos); i++ {
-		mediciones[i] = Medicion{
+		mediciones[i] = tipos.Medicion{
 			Tiempo: tiempos[i],
 			Valor:  valores[i],
 		}
@@ -727,25 +664,25 @@ func (me *ManagerEdge) comprimirYAlmacenar(buffer *SerieBuffer) {
 
 	// NIVEL 1: Compresión específica
 	// Tiempo: SIEMPRE usar DeltaDelta
-	tiemposComprimidos := me.compresionDeltaDeltaTiempo(mediciones)
+	tiemposComprimidos := compresor.CompresionDeltaDeltaTiempo(mediciones)
 
 	// Valores: usar compresión configurada en la serie
-	valores := extraerValores(mediciones)
-	compresorValor := me.obtenerCompressorValor(buffer.serie.CompresionBytes)
+	valores := compresor.ExtraerValores(mediciones)
+	compresorValor := compresor.ObtenerCompressorValor(buffer.serie.CompresionBytes)
 	valoresComprimidos := compresorValor.Comprimir(valores)
 
 	// Combinar datos del nivel 1
-	bloqueNivel1 := combinarDatos(tiemposComprimidos, valoresComprimidos)
+	bloqueNivel1 := compresor.CombinarDatos(tiemposComprimidos, valoresComprimidos)
 
 	// NIVEL 2: Compresión de bloque
-	compresorBloque := me.obtenerCompressorBloque(buffer.serie.CompresionBloque)
+	compresorBloque := compresor.ObtenerCompressorBloque(buffer.serie.CompresionBloque)
 	bloqueFinal, _ := compresorBloque.Comprimir(bloqueNivel1)
 
 	// Calcular timestamps de inicio y fin
 	tiempoInicio := mediciones[0].Tiempo
 	tiempoFinal := mediciones[len(mediciones)-1].Tiempo
 
-	fmt.Println("Almacenando bloque para serie:", buffer.serie.NombreSerie,
+	fmt.Println("Almacenando bloque para serie:", buffer.serie.Path,
 		"Tiempo inicio:", tiempoInicio,
 		"Tiempo final:", tiempoFinal,
 		"Mediciones:", len(mediciones),
@@ -755,12 +692,12 @@ func (me *ManagerEdge) comprimirYAlmacenar(buffer *SerieBuffer) {
 	key := generarClaveDatos(buffer.serie.SerieId, buffer.serie.TipoDatos, tiempoInicio, tiempoFinal)
 	err := me.db.Set(key, bloqueFinal, pebble.Sync)
 	if err != nil {
-		fmt.Printf("Error al escribir datos para serie %s: %v\n", buffer.serie.NombreSerie, err)
+		fmt.Printf("Error al escribir datos para serie %s: %v\n", buffer.serie.Path, err)
 	}
 }
 
 // ConsultarUltimoPunto obtiene la última medición registrada para una serie
-func (me *ManagerEdge) ConsultarUltimoPunto(nombreSerie string) (Medicion, error) {
+func (me *ManagerEdge) ConsultarUltimoPunto(nombreSerie string) (tipos.Medicion, error) {
 	// Primero revisar el buffer en memoria
 	if bufferInterface, ok := me.buffers.Load(nombreSerie); ok {
 		buffer := bufferInterface.(*SerieBuffer)
@@ -782,7 +719,7 @@ func (me *ManagerEdge) ConsultarUltimoPunto(nombreSerie string) (Medicion, error
 	// Si no hay datos en buffer, consultar la base de datos
 	serie, err := me.ObtenerSeries(nombreSerie)
 	if err != nil {
-		return Medicion{}, fmt.Errorf("serie no encontrada: %s", nombreSerie)
+		return tipos.Medicion{}, fmt.Errorf("serie no encontrada: %s", nombreSerie)
 	}
 
 	// Buscar el último bloque para esta serie
@@ -795,13 +732,13 @@ func (me *ManagerEdge) ConsultarUltimoPunto(nombreSerie string) (Medicion, error
 		UpperBound: upperBound,
 	})
 	if err != nil {
-		return Medicion{}, fmt.Errorf("error al crear iterador: %v", err)
+		return tipos.Medicion{}, fmt.Errorf("error al crear iterador: %v", err)
 	}
 	defer iter.Close()
 
 	// Ir al último elemento
 	if !iter.Last() {
-		return Medicion{}, fmt.Errorf("no hay mediciones para la serie: %s", nombreSerie)
+		return tipos.Medicion{}, fmt.Errorf("no hay mediciones para la serie: %s", nombreSerie)
 	}
 
 	datosComprimidos := make([]byte, len(iter.Value()))
@@ -809,11 +746,11 @@ func (me *ManagerEdge) ConsultarUltimoPunto(nombreSerie string) (Medicion, error
 
 	mediciones, err := me.descomprimirBloque(datosComprimidos, serie)
 	if err != nil {
-		return Medicion{}, fmt.Errorf("error al descomprimir último bloque: %v", err)
+		return tipos.Medicion{}, fmt.Errorf("error al descomprimir último bloque: %v", err)
 	}
 
 	if len(mediciones) == 0 {
-		return Medicion{}, fmt.Errorf("bloque vacío para serie: %s", nombreSerie)
+		return tipos.Medicion{}, fmt.Errorf("bloque vacío para serie: %s", nombreSerie)
 	}
 
 	// Encontrar la medición más reciente en el bloque
@@ -828,10 +765,10 @@ func (me *ManagerEdge) ConsultarUltimoPunto(nombreSerie string) (Medicion, error
 }
 
 // ConsultarPrimerPunto obtiene la primera medición registrada para una serie
-func (me *ManagerEdge) ConsultarPrimerPunto(nombreSerie string) (Medicion, error) {
+func (me *ManagerEdge) ConsultarPrimerPunto(nombreSerie string) (tipos.Medicion, error) {
 	serie, err := me.ObtenerSeries(nombreSerie)
 	if err != nil {
-		return Medicion{}, fmt.Errorf("serie no encontrada: %s", nombreSerie)
+		return tipos.Medicion{}, fmt.Errorf("serie no encontrada: %s", nombreSerie)
 	}
 
 	// Buscar el primer bloque para esta serie
@@ -844,13 +781,13 @@ func (me *ManagerEdge) ConsultarPrimerPunto(nombreSerie string) (Medicion, error
 		UpperBound: upperBound,
 	})
 	if err != nil {
-		return Medicion{}, fmt.Errorf("error al crear iterador: %v", err)
+		return tipos.Medicion{}, fmt.Errorf("error al crear iterador: %v", err)
 	}
 	defer iter.Close()
 
 	// Ir al primer elemento
 	if !iter.First() {
-		return Medicion{}, fmt.Errorf("no hay mediciones para la serie: %s", nombreSerie)
+		return tipos.Medicion{}, fmt.Errorf("no hay mediciones para la serie: %s", nombreSerie)
 	}
 
 	datosComprimidos := make([]byte, len(iter.Value()))
@@ -858,11 +795,11 @@ func (me *ManagerEdge) ConsultarPrimerPunto(nombreSerie string) (Medicion, error
 
 	mediciones, err := me.descomprimirBloque(datosComprimidos, serie)
 	if err != nil {
-		return Medicion{}, fmt.Errorf("error al descomprimir primer bloque: %v", err)
+		return tipos.Medicion{}, fmt.Errorf("error al descomprimir primer bloque: %v", err)
 	}
 
 	if len(mediciones) == 0 {
-		return Medicion{}, fmt.Errorf("bloque vacío para serie: %s", nombreSerie)
+		return tipos.Medicion{}, fmt.Errorf("bloque vacío para serie: %s", nombreSerie)
 	}
 
 	// Encontrar la medición más antigua en el bloque
@@ -876,370 +813,53 @@ func (me *ManagerEdge) ConsultarPrimerPunto(nombreSerie string) (Medicion, error
 	return primeraMedicion, nil
 }
 
-// generarClaveRegla genera una clave PebbleDB para metadatos de regla
-func generarClaveRegla(id string) []byte {
-	return []byte("reglas/" + id)
-}
-
-// serializarRegla serializa una Regla a bytes
-func serializarRegla(regla *Regla) ([]byte, error) {
-	var buffer bytes.Buffer
-	encoder := gob.NewEncoder(&buffer)
-	err := encoder.Encode(regla)
-	if err != nil {
-		return nil, err
-	}
-	return buffer.Bytes(), nil
-}
-
-// deserializarRegla deserializa bytes a una Regla
-func deserializarRegla(data []byte) (*Regla, error) {
-	var regla Regla
-	buffer := bytes.NewBuffer(data)
-	decoder := gob.NewDecoder(buffer)
-	err := decoder.Decode(&regla)
-	if err != nil {
-		return nil, err
-	}
-	return &regla, nil
-}
-
-// cargarReglasExistentes carga todas las reglas desde PebbleDB al motor
-func (me *ManagerEdge) cargarReglasExistentes() error {
-	iter, err := me.db.NewIter(&pebble.IterOptions{
-		LowerBound: []byte("reglas/"),
-		UpperBound: []byte("reglas0"), // Rango que incluye todas las claves "reglas/*"
-	})
-	if err != nil {
-		return err
-	}
-	defer iter.Close()
-
-	for iter.First(); iter.Valid(); iter.Next() {
-		key := string(iter.Key())
-		if !strings.HasPrefix(key, "reglas/") {
-			continue
-		}
-
-		// Deserializar regla
-		regla, err := deserializarRegla(iter.Value())
-		if err != nil {
-			continue // Skip reglas con error de deserialización
-		}
-
-		// Agregar al motor (solo en memoria, ya está en DB)
-		me.motorReglas.mu.Lock()
-		me.motorReglas.reglas[regla.ID] = regla
-		me.motorReglas.mu.Unlock()
-	}
-
-	return iter.Error()
-}
-
-// Métodos proxy para el motor de reglas
 func (me *ManagerEdge) AgregarRegla(regla *Regla) error {
-	if regla == nil {
-		return fmt.Errorf("regla no puede ser nil")
-	}
-
-	if err := me.motorReglas.validarRegla(regla); err != nil {
-		return fmt.Errorf("regla inválida: %v", err)
-	}
-
-	// Guardar en base de datos
-	key := generarClaveRegla(regla.ID)
-	reglaBytes, err := serializarRegla(regla)
-	if err != nil {
-		return fmt.Errorf("error al serializar regla: %v", err)
-	}
-
-	err = me.db.Set(key, reglaBytes, pebble.Sync)
-	if err != nil {
-		return fmt.Errorf("error al guardar regla: %v", err)
-	}
-
-	// Agregar al cache en memoria
-	me.motorReglas.mu.Lock()
-	defer me.motorReglas.mu.Unlock()
-
-	regla.Activa = true
-	me.motorReglas.reglas[regla.ID] = regla
-
-	log.Printf("Regla '%s' agregada exitosamente", regla.ID)
-	return nil
+	return me.MotorReglas.AgregarRegla(regla)
 }
 
 func (me *ManagerEdge) EliminarRegla(id string) error {
-	me.motorReglas.mu.Lock()
-	defer me.motorReglas.mu.Unlock()
-
-	if _, exists := me.motorReglas.reglas[id]; !exists {
-		return fmt.Errorf("regla '%s' no encontrada", id)
-	}
-
-	// Eliminar de base de datos
-	key := generarClaveRegla(id)
-	err := me.db.Delete(key, pebble.Sync)
-	if err != nil {
-		return fmt.Errorf("error al eliminar regla de DB: %v", err)
-	}
-
-	// Eliminar del cache
-	delete(me.motorReglas.reglas, id)
-
-	log.Printf("Regla '%s' eliminada", id)
-	return nil
+	return me.MotorReglas.EliminarRegla(id)
 }
 
 func (me *ManagerEdge) ActualizarRegla(regla *Regla) error {
-	if regla == nil {
-		return fmt.Errorf("regla no puede ser nil")
-	}
-
-	if err := me.motorReglas.validarRegla(regla); err != nil {
-		return fmt.Errorf("regla inválida: %v", err)
-	}
-
-	me.motorReglas.mu.Lock()
-	defer me.motorReglas.mu.Unlock()
-
-	if _, exists := me.motorReglas.reglas[regla.ID]; !exists {
-		return fmt.Errorf("regla '%s' no encontrada", regla.ID)
-	}
-
-	// Actualizar en base de datos
-	key := generarClaveRegla(regla.ID)
-	reglaBytes, err := serializarRegla(regla)
-	if err != nil {
-		return fmt.Errorf("error al serializar regla: %v", err)
-	}
-
-	err = me.db.Set(key, reglaBytes, pebble.Sync)
-	if err != nil {
-		return fmt.Errorf("error al actualizar regla en DB: %v", err)
-	}
-
-	// Actualizar en cache
-	me.motorReglas.reglas[regla.ID] = regla
-	log.Printf("Regla '%s' actualizada", regla.ID)
-	return nil
-}
-
-func (me *ManagerEdge) ListarReglas() map[string]*Regla {
-	me.motorReglas.mu.RLock()
-	defer me.motorReglas.mu.RUnlock()
-
-	copia := make(map[string]*Regla)
-	for id, regla := range me.motorReglas.reglas {
-		copia[id] = regla
-	}
-	return copia
-}
-
-func (me *ManagerEdge) ObtenerRegla(id string) (*Regla, error) {
-	me.motorReglas.mu.RLock()
-	defer me.motorReglas.mu.RUnlock()
-
-	regla, exists := me.motorReglas.reglas[id]
-	if !exists {
-		return nil, fmt.Errorf("regla '%s' no encontrada", id)
-	}
-
-	return regla, nil
-}
-
-func (me *ManagerEdge) ProcesarDatoRegla(serie string, valor float64, timestamp time.Time) error {
-	return me.motorReglas.ProcesarDato(serie, valor, timestamp)
+	return me.MotorReglas.ActualizarRegla(regla)
 }
 
 func (me *ManagerEdge) RegistrarEjecutor(tipoAccion string, ejecutor EjecutorAccion) error {
-	return me.motorReglas.RegistrarEjecutor(tipoAccion, ejecutor)
+	return me.MotorReglas.RegistrarEjecutor(tipoAccion, ejecutor)
+}
+
+func (me *ManagerEdge) ProcesarDatoRegla(serie string, valor float64, timestamp time.Time) error {
+	return me.MotorReglas.ProcesarDato(serie, valor, timestamp)
+}
+
+func (me *ManagerEdge) ListarReglas() map[string]*Regla {
+	return me.MotorReglas.ListarReglas()
 }
 
 func (me *ManagerEdge) HabilitarMotorReglas(habilitado bool) {
-	me.motorReglas.Habilitar(habilitado)
-}
-
-func (me *ManagerEdge) informarSuscripcion() error {
-	if me.cliente == nil {
-		return nil
-	}
-
-	me.cache.mu.RLock()
-	series := make(map[string]string)
-	for path, serie := range me.cache.datos {
-		series[path] = fmt.Sprintf("%d", serie.SerieId)
-	}
-	me.cache.mu.RUnlock()
-
-	suscripcion := SuscripcionNodo{
-		ID:     me.nodeID,
-		Series: series,
-	}
-
-	payload, err := json.Marshal(suscripcion)
-	if err != nil {
-		return fmt.Errorf("error al serializar suscripción: %v", err)
-	}
-
-	me.cliente.Publicar("despachador.suscripcion", payload)
-	log.Printf("Suscripción informada: nodo %s con %d series", me.nodeID, len(series))
-	return nil
-}
-
-func (me *ManagerEdge) informarNuevaSerie(path string, serieID int) error {
-	if me.cliente == nil {
-		return nil
-	}
-
-	nuevaSerie := NuevaSerie{
-		NodeID:  me.nodeID,
-		Path:    path,
-		SerieID: serieID,
-	}
-
-	payload, err := json.Marshal(nuevaSerie)
-	if err != nil {
-		return fmt.Errorf("error al serializar nueva serie: %v", err)
-	}
-
-	me.cliente.Publicar("despachador.nueva_serie", payload)
-	log.Printf("Nueva serie informada: %s (ID: %d) en nodo %s", path, serieID, me.nodeID)
-	return nil
-}
-
-func (me *ManagerEdge) enviarHeartbeat() {
-	if me.cliente == nil {
-		return
-	}
-
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-me.done:
-			return
-		case <-ticker.C:
-			if me.cliente == nil {
-				return
-			}
-
-			heartbeat := Heartbeat{
-				NodeID:    me.nodeID,
-				Timestamp: time.Now(),
-				Activo:    true,
-			}
-
-			payload, err := json.Marshal(heartbeat)
-			if err != nil {
-				log.Printf("Error al serializar heartbeat: %v", err)
-				continue
-			}
-
-			me.cliente.Publicar("despachador.heartbeat", payload)
-			log.Printf("Heartbeat enviado desde nodo %s", me.nodeID)
-		}
-	}
-}
-
-func (me *ManagerEdge) intentarReconexionPeriodica() {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-me.done:
-			return
-		case <-ticker.C:
-			me.muConexion.Lock()
-			if me.cliente != nil {
-				me.muConexion.Unlock()
-				return
-			}
-
-			if me.reconectando {
-				me.muConexion.Unlock()
-				continue
-			}
-
-			me.reconectando = true
-			me.muConexion.Unlock()
-
-			log.Printf("Intentando reconectar a NATS...")
-			cliente, err := sw_cliente.Conectar(me.direccionNATS, me.puertoNATS)
-
-			me.muConexion.Lock()
-			if err != nil {
-				log.Printf("Fallo al reconectar a NATS: %v", err)
-				me.reconectando = false
-				me.muConexion.Unlock()
-				continue
-			}
-
-			me.cliente = cliente
-			me.reconectando = false
-			me.muConexion.Unlock()
-
-			log.Printf("Reconexión a NATS exitosa")
-
-			if err := me.sincronizarEstado(); err != nil {
-				log.Printf("Error al sincronizar estado después de reconexión: %v", err)
-			}
-
-			go me.enviarHeartbeat()
-			return
-		}
-	}
-}
-
-func (me *ManagerEdge) sincronizarEstado() error {
-	me.muSincronizando.Lock()
-	defer me.muSincronizando.Unlock()
-
-	if me.cliente == nil {
-		return fmt.Errorf("cliente NATS no disponible")
-	}
-
-	if err := me.informarSuscripcion(); err != nil {
-		return fmt.Errorf("error al informar suscripción: %v", err)
-	}
-
-	me.ultimaSincro = time.Now()
-	log.Printf("Estado sincronizado exitosamente para nodo %s", me.nodeID)
-	return nil
-}
-
-func (me *ManagerEdge) manejarDesconexion() {
-	me.muConexion.Lock()
-	defer me.muConexion.Unlock()
-
-	if me.cliente != nil {
-		me.cliente.Desconectar()
-		me.cliente = nil
-		log.Printf("Desconectado de NATS, cambiando a modo autónomo")
-	}
-
-	go me.intentarReconexionPeriodica()
+	me.MotorReglas.Habilitar(habilitado)
 }
 
 func (me *ManagerEdge) EstadoConexion() string {
-	me.muConexion.Lock()
-	defer me.muConexion.Unlock()
+	estado := "local"
 
-	if me.cliente != nil {
-		return "conectado"
+	if me.fdbDatabase != nil {
+		estado += " + fdb"
 	}
-	if me.reconectando {
-		return "reconectando"
+
+	if me.Cluster != nil {
+		estado += " + " + me.Cluster.EstadoConexion()
 	}
-	return "desconectado"
+
+	return estado
 }
 
 func (me *ManagerEdge) ObtenerUltimaSincronizacion() time.Time {
-	me.muSincronizando.Lock()
-	defer me.muSincronizando.Unlock()
-	return me.ultimaSincro
+	if me.Cluster != nil {
+		return me.Cluster.ObtenerUltimaSincronizacion()
+	}
+	return time.Time{}
 }
 
 // ListarSeriesPorPath retorna todas las series que coincidan con un patrón de path
@@ -1276,11 +896,6 @@ func (me *ManagerEdge) ListarSeriesPorTags(tags map[string]string) ([]Serie, err
 func (me *ManagerEdge) ListarSeriesPorDispositivo(dispositivoID string) ([]Serie, error) {
 	pathPattern := dispositivoID + "/*"
 	return me.ListarSeriesPorPath(pathPattern)
-}
-
-// ConsultarRangoPorPath consulta mediciones usando path (con soporte para NombreSerie legacy)
-func (me *ManagerEdge) ConsultarRangoPorPath(path string, tiempoInicio, tiempoFin time.Time) ([]Medicion, error) {
-	return me.ConsultarRango(path, tiempoInicio, tiempoFin)
 }
 
 // matchPath verifica si un path coincide con un patrón (soporta wildcard *)
@@ -1325,4 +940,55 @@ func matchTags(serieTags, filterTags map[string]string) bool {
 	}
 
 	return true
+}
+
+
+// Migrar a FoundationDB migra todas las series y datos a FoundationDB
+func (me *ManagerEdge) Migrar() error {
+	// si FoundationDB no está configurado, retornar error
+	if me.fdbDatabase == nil {
+		return fmt.Errorf("FoundationDB no está configurado o iniciado en este nodo edge")
+	}
+	
+	// Iterar sobre los datos en PebbleDB y migrar a FoundationDB
+	iter, err := me.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte("data/"),
+		UpperBound: []byte("data0"),
+	})
+	if err != nil {
+		return fmt.Errorf("error al crear iterador para migración: %v", err)
+	}
+	defer iter.Close()
+	
+	for iter.First(); iter.Valid(); iter.Next() {
+		// Obtener clave y valor
+		clave := iter.Key()
+		valor := iter.Value()
+
+		// copiar a FoundationDB
+		// Crear una transacción en FoundationDB
+		_, err := me.fdbDatabase.Transact(func(tr fdb.Transaction) (interface{}, error) {
+			// Usar la misma clave y valor en FoundationDB
+			tr.Set(fdb.Key(clave), valor)
+			return nil, nil
+		})
+		// Verificar error de la transacción
+		if err != nil {
+			return fmt.Errorf("error al migrar dato a FoundationDB: %v", err)
+		}
+		
+		// Borrar la entrada de PebbleDB después de migrar
+		err = me.db.Delete(clave, pebble.Sync)
+		if err != nil {
+			return fmt.Errorf("error al borrar dato migrado de PebbleDB: %v", err)
+		}
+	}
+
+	// Verificar errores del iterador
+	if err := iter.Error(); err != nil {
+		return fmt.Errorf("error durante la iteración para migración: %v", err)
+	}
+
+	log.Printf("Migración a FoundationDB completada exitosamente")
+	return nil
 }

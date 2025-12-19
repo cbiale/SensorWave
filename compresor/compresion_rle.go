@@ -1,119 +1,178 @@
+/*
+## Algoritmo de Compresión RLE (Run-Length Encoding) - Versión Genérica
+
+Objetivo: Comprimir secuencias de valores detectando repeticiones consecutivas.
+
+Entrada: Array de valores de tipo T [v₀, v₁, v₂, ..., vₙ]
+
+Salida: Secuencia de pares (run_count, valor) donde:
+
+• run_count: entero sin signo de 8 bits (1-255) indicando cuántas veces se repite consecutivamente
+• valor: valor que se repite
+
+Algoritmo:
+
+1. Inicializar:
+ • Si el input está vacío, retornar output vacío
+ • previous_value ← primer valor del input
+ • previous_run_count ← 1
+ • output ← lista vacía
+
+2. Procesar cada valor vᵢ restante (i = 1 hasta n):
+ • Si vᵢ es idéntico a previous_value Y previous_run_count < 255:
+  • previous_run_count ← previous_run_count + 1
+ • Sino:
+  • Agregar par (previous_run_count, previous_value) a output
+  • previous_value ← vᵢ
+  • previous_run_count ← 1
+
+3. Finalizar:
+ • Agregar último par (previous_run_count, previous_value) a output
+ • Retornar output
+
+Restricciones:
+
+• Máximo 255 repeticiones por par (límite de u8)
+• Comparación mediante == para tipos comparables
+• Formato little-endian para serialización
+• Para strings se usa serialización de longitud variable
+
+Complejidad: O(n) tiempo, O(k) espacio donde k ≤ n es el número de runs distintos.
+*/
+
 package compresor
 
-import "fmt"
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+)
 
-// CompressorRLE implementa compresión Run-Length Encoding para valores repetitivos
-type CompressorRLE struct{}
+// CompresorRLEGenerico implementa el algoritmo de compresión RLE para tipos comparables
+type CompresorRLEGenerico[T comparable] struct{}
 
-func (c *CompressorRLE) Comprimir(valores []interface{}) []byte {
+// Comprimir comprime una serie de valores usando RLE
+// Para tipos numéricos y booleanos usa binary.Write
+// Para strings usa serialización de longitud variable
+func (c *CompresorRLEGenerico[T]) Comprimir(valores []T) ([]byte, error) {
 	if len(valores) == 0 {
-		return []byte{}
+		return []byte{}, nil
 	}
 
-	resultado := make([]byte, 0)
+	var buffer bytes.Buffer
+	valorPrevio := valores[0]
+	cantidad := uint8(1)
 
-	// Convertir todos los valores a float64
-	valoresFloat := make([]float64, len(valores))
-	for i, valor := range valores {
-		if v, ok := valor.(float64); ok {
-			valoresFloat[i] = v
+	for i := 1; i < len(valores); i++ {
+		if valores[i] == valorPrevio && cantidad < 255 {
+			cantidad++
 		} else {
-			valoresFloat[i] = 0.0
+			// Escribir el par (cantidad, valorPrevio)
+			if err := buffer.WriteByte(cantidad); err != nil {
+				return nil, err
+			}
+			if err := escribirValor(&buffer, valorPrevio); err != nil {
+				return nil, err
+			}
+			valorPrevio = valores[i]
+			cantidad = 1
 		}
 	}
 
-	// Almacenar número de elementos originales (4 bytes)
-	numElementos := len(valoresFloat)
-	resultado = append(resultado, byte(numElementos>>24))
-	resultado = append(resultado, byte(numElementos>>16))
-	resultado = append(resultado, byte(numElementos>>8))
-	resultado = append(resultado, byte(numElementos))
-
-	if numElementos == 0 {
-		return resultado
+	// Escribir el último par
+	if err := buffer.WriteByte(cantidad); err != nil {
+		return nil, err
+	}
+	if err := escribirValor(&buffer, valorPrevio); err != nil {
+		return nil, err
 	}
 
-	// Aplicar RLE
-	i := 0
-	for i < len(valoresFloat) {
-		valorActual := valoresFloat[i]
-		cuenta := 1
-
-		// Contar valores repetidos consecutivos
-		for i+cuenta < len(valoresFloat) && valoresFloat[i+cuenta] == valorActual {
-			cuenta++
-		}
-
-		// Almacenar valor (8 bytes) + cuenta (4 bytes)
-		resultado = append(resultado, float64ToBytes(valorActual)...)
-
-		// Dividir cuenta en chunks si es muy grande (máximo 4 bytes unsigned)
-		if cuenta > 4294967295 { // máximo uint32
-			cuenta = 4294967295
-		}
-
-		resultado = append(resultado, byte(cuenta>>24))
-		resultado = append(resultado, byte(cuenta>>16))
-		resultado = append(resultado, byte(cuenta>>8))
-		resultado = append(resultado, byte(cuenta))
-
-		i += cuenta
-	}
-
-	return resultado
+	return buffer.Bytes(), nil
 }
 
-func (c *CompressorRLE) Descomprimir(datos []byte) ([]interface{}, error) {
+// Descomprimir descomprime datos RLE a una serie de valores
+func (c *CompresorRLEGenerico[T]) Descomprimir(datos []byte) ([]T, error) {
 	if len(datos) == 0 {
-		return []interface{}{}, nil
+		return []T{}, nil
 	}
 
-	if len(datos) < 4 {
-		return nil, fmt.Errorf("datos insuficientes para descomprimir RLE")
-	}
+	var resultados []T
+	buffer := bytes.NewReader(datos)
 
-	offset := 0
-
-	// Leer número de elementos originales
-	numElementos := int(datos[0])<<24 | int(datos[1])<<16 | int(datos[2])<<8 | int(datos[3])
-	offset += 4
-
-	if numElementos == 0 {
-		return []interface{}{}, nil
-	}
-
-	resultado := make([]interface{}, 0, numElementos)
-
-	// Descomprimir RLE
-	for offset < len(datos) {
-		// Verificar que tenemos suficientes datos para valor + cuenta
-		if offset+12 > len(datos) {
-			return nil, fmt.Errorf("datos insuficientes para entrada RLE")
+	for {
+		var cantidad uint8
+		err := binary.Read(buffer, binary.LittleEndian, &cantidad)
+		if err != nil {
+			break // Fin de datos
 		}
 
-		// Leer valor (8 bytes)
-		valor := bytesToFloat64(datos[offset : offset+8])
-		offset += 8
-
-		// Leer cuenta (4 bytes)
-		cuenta := int(datos[offset])<<24 | int(datos[offset+1])<<16 | int(datos[offset+2])<<8 | int(datos[offset+3])
-		offset += 4
-
-		// Agregar valor repetido 'cuenta' veces
-		for j := 0; j < cuenta; j++ {
-			resultado = append(resultado, valor)
+		valor, err := leerValor[T](buffer)
+		if err != nil {
+			return nil, fmt.Errorf("error al leer valor: %v", err)
 		}
 
-		// Verificar que no excedamos el número original de elementos
-		if len(resultado) >= numElementos {
-			break
+		for i := 0; i < int(cantidad); i++ {
+			resultados = append(resultados, valor)
 		}
 	}
 
-	// Truncar resultado al tamaño original si es necesario
-	if len(resultado) > numElementos {
-		resultado = resultado[:numElementos]
+	return resultados, nil
+}
+
+// escribirValor escribe un valor al buffer usando binary.Write
+// Esta función usa type assertion en runtime para manejar diferentes tipos
+func escribirValor[T any](buffer *bytes.Buffer, valor T) error {
+	// Intentar usar binary.Write para tipos básicos
+	err := binary.Write(buffer, binary.LittleEndian, valor)
+	if err != nil {
+		// Si falla, intentar con string (caso especial)
+		if str, ok := any(valor).(string); ok {
+			// Para strings: escribir longitud (uint16) + bytes
+			if len(str) > 65535 {
+				return fmt.Errorf("string demasiado largo: %d bytes", len(str))
+			}
+			if err := binary.Write(buffer, binary.LittleEndian, uint16(len(str))); err != nil {
+				return err
+			}
+			_, err := buffer.WriteString(str)
+			return err
+		}
+		return err
+	}
+	return nil
+}
+
+// leerValor lee un valor del buffer
+func leerValor[T any](buffer *bytes.Reader) (T, error) {
+	var valor T
+
+	// Intentar usar binary.Read para tipos básicos
+	err := binary.Read(buffer, binary.LittleEndian, &valor)
+	if err == nil {
+		return valor, nil
 	}
 
-	return resultado, nil
+	// Si falla, intentar con string (caso especial)
+	if _, ok := any(valor).(string); ok {
+		var longitud uint16
+		if err := binary.Read(buffer, binary.LittleEndian, &longitud); err != nil {
+			return valor, err
+		}
+
+		// Si el string es vacio, no hay bytes que leer
+		if longitud == 0 {
+			return any("").(T), nil
+		}
+
+		strBytes := make([]byte, longitud)
+		if _, err := buffer.Read(strBytes); err != nil {
+			return valor, err
+		}
+
+		// Convertir []byte a string y luego a T
+		str := string(strBytes)
+		return any(str).(T), nil
+	}
+
+	return valor, err
 }

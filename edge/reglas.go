@@ -1,15 +1,15 @@
 package edge
 
 import (
-	"bytes"
-	"encoding/gob"
 	"fmt"
 	"log"
 	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/cbiale/sensorwave/tipos"
 	"github.com/cockroachdb/pebble"
 )
 
@@ -47,8 +47,9 @@ type Condicion struct {
 	PathPattern string            // Patrón de path: "dispositivo_001/*"
 	TagsFilter  map[string]string // Filtro por tags: {"ubicacion": "sala1"}
 	Agregacion  TipoAgregacion
+	FiltroValor interface{} // Filtro pre-agregación (nil = sin filtro, solo soportado con AgregacionCount)
 	Operador    TipoOperador
-	Valor       float64
+	Valor       interface{} // Valor umbral para comparación (soporta bool, int64, float64, string)
 	VentanaT    time.Duration
 }
 
@@ -70,10 +71,10 @@ type Regla struct {
 
 type DatoTemporal struct {
 	Timestamp time.Time
-	Valor     float64
+	Valor     interface{} // Soporta Boolean, Integer (int64), Real (float64), Text (string)
 }
 
-type EjecutorAccion func(accion Accion, regla *Regla, valores map[string]float64) error
+type EjecutorAccion func(accion Accion, regla *Regla, valores map[string]interface{}) error
 
 type MotorReglas struct {
 	reglas         map[string]*Regla
@@ -106,26 +107,26 @@ func nuevoMotorReglasIntegrado(manager *ManagerEdge, db *pebble.DB) *MotorReglas
 }
 
 func (mr *MotorReglas) registrarEjecutoresPorDefecto() {
-	mr.ejecutores["log"] = func(accion Accion, regla *Regla, valores map[string]float64) error {
+	mr.ejecutores["log"] = func(accion Accion, regla *Regla, valores map[string]interface{}) error {
 		mr.logger.Printf("Regla '%s' activada - Acción: %s, Destino: %s, Valores: %v",
 			regla.ID, accion.Tipo, accion.Destino, valores)
 		return nil
 	}
 
-	mr.ejecutores["enviar_alerta"] = func(accion Accion, regla *Regla, valores map[string]float64) error {
+	mr.ejecutores["enviar_alerta"] = func(accion Accion, regla *Regla, valores map[string]interface{}) error {
 		mr.logger.Printf("ALERTA: Regla '%s' - %s. Valores: %v",
 			regla.ID, accion.Destino, valores)
 		return nil
 	}
 
-	mr.ejecutores["activar_actuador"] = func(accion Accion, regla *Regla, valores map[string]float64) error {
+	mr.ejecutores["activar_actuador"] = func(accion Accion, regla *Regla, valores map[string]interface{}) error {
 		mr.logger.Printf("ACTUADOR: Activando %s por regla '%s'. Valores: %v",
 			accion.Destino, regla.ID, valores)
 		return nil
 	}
 }
 
-func (mr *MotorReglas) ProcesarDato(serie string, valor float64, timestamp time.Time) error {
+func (mr *MotorReglas) ProcesarDato(serie string, valor interface{}, timestamp time.Time) error {
 	if !mr.habilitado {
 		return nil
 	}
@@ -248,7 +249,7 @@ func calcularAgregacionSimple(valores []float64, agregacion TipoAgregacion) (flo
 func (mr *MotorReglas) evaluarCondicion(condicion *Condicion, timestamp time.Time) bool {
 	tiempoInicio := timestamp.Add(-condicion.VentanaT)
 
-	var valorEvaluacion float64
+	var valorEvaluacion interface{}
 	var err error
 
 	if condicion.PathPattern != "" || len(condicion.TagsFilter) > 0 {
@@ -256,10 +257,13 @@ func (mr *MotorReglas) evaluarCondicion(condicion *Condicion, timestamp time.Tim
 		if len(seriesResueltas) == 0 {
 			return false
 		}
-		valorEvaluacion, err = mr.calcularAgregacion(seriesResueltas, condicion.Agregacion, tiempoInicio, timestamp)
+		// Para agregaciones, siempre retorna float64
+		valorEvaluacion, err = mr.calcularAgregacion(seriesResueltas, condicion.Agregacion, tiempoInicio, timestamp, condicion.FiltroValor)
 	} else if len(condicion.SeriesGrupo) > 0 {
-		valorEvaluacion, err = mr.calcularAgregacion(condicion.SeriesGrupo, condicion.Agregacion, tiempoInicio, timestamp)
+		// Para agregaciones, siempre retorna float64
+		valorEvaluacion, err = mr.calcularAgregacion(condicion.SeriesGrupo, condicion.Agregacion, tiempoInicio, timestamp, condicion.FiltroValor)
 	} else {
+		// Para serie individual, puede retornar cualquier tipo
 		valorEvaluacion, err = mr.obtenerValorSerie(condicion.Serie, tiempoInicio, timestamp)
 	}
 
@@ -270,7 +274,66 @@ func (mr *MotorReglas) evaluarCondicion(condicion *Condicion, timestamp time.Tim
 	return mr.aplicarOperador(valorEvaluacion, condicion.Operador, condicion.Valor)
 }
 
-func (mr *MotorReglas) calcularAgregacion(series []string, agregacion TipoAgregacion, tiempoInicio, tiempoFin time.Time) (float64, error) {
+// convertirAFloat64 convierte un valor interface{} a float64 para agregaciones numéricas
+func convertirAFloat64(valor interface{}) (float64, error) {
+	switch v := valor.(type) {
+	case float64:
+		return v, nil
+	case int64:
+		return float64(v), nil
+	default:
+		return 0, fmt.Errorf("tipo %T no se puede convertir a float64", valor)
+	}
+}
+
+// coincideFiltro verifica si un valor coincide con el filtro
+func coincideFiltro(valor interface{}, filtro interface{}) bool {
+	// Mismo tipo: comparar directamente
+	switch v := valor.(type) {
+	case bool:
+		f, ok := filtro.(bool)
+		if !ok {
+			return false
+		}
+		return v == f
+
+	case string:
+		f, ok := filtro.(string)
+		if !ok {
+			return false
+		}
+		// Case-insensitive para strings
+		return strings.EqualFold(v, f)
+
+	case int64:
+		// Filtro puede ser int64 o float64
+		switch f := filtro.(type) {
+		case int64:
+			return v == f
+		case float64:
+			return float64(v) == f
+		default:
+			return false
+		}
+
+	case float64:
+		// Filtro puede ser int64 o float64
+		const epsilon = 1e-9
+		switch f := filtro.(type) {
+		case int64:
+			return math.Abs(v-float64(f)) < epsilon
+		case float64:
+			return math.Abs(v-f) < epsilon
+		default:
+			return false
+		}
+
+	default:
+		return false
+	}
+}
+
+func (mr *MotorReglas) calcularAgregacion(series []string, agregacion TipoAgregacion, tiempoInicio, tiempoFin time.Time, filtroValor interface{}) (float64, error) {
 	var valoresPorSerie []float64
 
 	// Calcular agregación POR CADA serie
@@ -280,10 +343,31 @@ func (mr *MotorReglas) calcularAgregacion(series []string, agregacion TipoAgrega
 			continue
 		}
 
-		// Extraer valores de los datos temporales
-		valores := make([]float64, len(datosValidos))
-		for i, dato := range datosValidos {
-			valores[i] = dato.Valor
+		// Extraer valores de los datos temporales y convertir a float64
+		valores := make([]float64, 0, len(datosValidos))
+		for _, dato := range datosValidos {
+			// Aplicar filtro si existe
+			if filtroValor != nil {
+				if !coincideFiltro(dato.Valor, filtroValor) {
+					continue // Saltar este valor
+				}
+			}
+
+			// Convertir a float64 para agregación numérica
+			valorFloat, err := convertirAFloat64(dato.Valor)
+			if err != nil {
+				// Si no se puede convertir (ej: string, boolean) y estamos haciendo count, usar 1.0
+				if agregacion == AgregacionCount {
+					valorFloat = 1.0
+				} else {
+					continue // Saltar valores no numéricos para otras agregaciones
+				}
+			}
+			valores = append(valores, valorFloat)
+		}
+
+		if len(valores) == 0 {
+			continue
 		}
 
 		// Usar helper para calcular agregación de esta serie
@@ -303,11 +387,11 @@ func (mr *MotorReglas) calcularAgregacion(series []string, agregacion TipoAgrega
 	return calcularAgregacionSimple(valoresPorSerie, agregacion)
 }
 
-func (mr *MotorReglas) obtenerValorSerie(serie string, tiempoInicio, tiempoFin time.Time) (float64, error) {
+func (mr *MotorReglas) obtenerValorSerie(serie string, tiempoInicio, tiempoFin time.Time) (interface{}, error) {
 	datosValidos := mr.obtenerDatosEnVentana(serie, tiempoInicio, tiempoFin)
 
 	if len(datosValidos) == 0 {
-		return 0, fmt.Errorf("no hay datos disponibles para la serie %s", serie)
+		return nil, fmt.Errorf("no hay datos disponibles para la serie %s", serie)
 	}
 
 	return datosValidos[len(datosValidos)-1].Valor, nil
@@ -316,66 +400,135 @@ func (mr *MotorReglas) obtenerValorSerie(serie string, tiempoInicio, tiempoFin t
 func (mr *MotorReglas) obtenerDatosEnVentana(serie string, tiempoInicio, tiempoFin time.Time) []DatoTemporal {
 	var datosValidos []DatoTemporal
 
-	// Si tenemos acceso al manager, usar datos de la base de datos
+	// Primero verificar cache local (más rápido y tiene datos recientes)
+	datos, existsInCache := mr.datos[serie]
+	if existsInCache {
+		for _, dato := range datos {
+			if dato.Timestamp.After(tiempoInicio) && dato.Timestamp.Before(tiempoFin) || dato.Timestamp.Equal(tiempoFin) {
+				datosValidos = append(datosValidos, dato)
+			}
+		}
+
+		// Si encontramos datos en cache, retornarlos
+		if len(datosValidos) > 0 {
+			sort.Slice(datosValidos, func(i, j int) bool {
+				return datosValidos[i].Timestamp.Before(datosValidos[j].Timestamp)
+			})
+			return datosValidos
+		}
+	}
+
+	// Si no hay datos en cache, consultar la base de datos
 	if mr.manager != nil {
 		mediciones, err := mr.manager.ConsultarRango(serie, tiempoInicio, tiempoFin)
 		if err == nil {
-			// Convertir Medicion a DatoTemporal
+			// Convertir Medicion a DatoTemporal (ahora acepta todos los tipos)
 			for _, medicion := range mediciones {
-				if valor, ok := medicion.Valor.(float64); ok {
-					datosValidos = append(datosValidos, DatoTemporal{
-						Timestamp: time.Unix(0, medicion.Tiempo),
-						Valor:     valor,
-					})
-				}
+				datosValidos = append(datosValidos, DatoTemporal{
+					Timestamp: time.Unix(0, medicion.Tiempo),
+					Valor:     medicion.Valor,
+				})
 			}
 			return datosValidos
 		}
-		// Si falla la consulta a BD, continúa con cache local
 	}
 
-	// Fallback al cache local
-	datos, exists := mr.datos[serie]
-	if !exists {
-		return nil
+	return nil
+}
+
+func (mr *MotorReglas) aplicarOperador(valor1 interface{}, operador TipoOperador, valor2 interface{}) bool {
+	const epsilon = 1e-9
+
+	// Caso 1: Comparación Boolean
+	if v1, ok1 := valor1.(bool); ok1 {
+		if v2, ok2 := valor2.(bool); ok2 {
+			switch operador {
+			case OperadorIgual:
+				return v1 == v2
+			case OperadorDistinto:
+				return v1 != v2
+			default:
+				mr.logger.Printf("Operador %s no soportado para boolean", operador)
+				return false
+			}
+		}
+		// Tipos incompatibles
+		mr.logger.Printf("No se puede comparar bool con %T", valor2)
+		return false
 	}
 
-	for _, dato := range datos {
-		if dato.Timestamp.After(tiempoInicio) && dato.Timestamp.Before(tiempoFin) || dato.Timestamp.Equal(tiempoFin) {
-			datosValidos = append(datosValidos, dato)
+	// Caso 2: Comparación String (case-insensitive)
+	if v1, ok1 := valor1.(string); ok1 {
+		if v2, ok2 := valor2.(string); ok2 {
+			v1Lower := strings.ToLower(v1)
+			v2Lower := strings.ToLower(v2)
+
+			switch operador {
+			case OperadorIgual:
+				return v1Lower == v2Lower
+			case OperadorDistinto:
+				return v1Lower != v2Lower
+			default:
+				mr.logger.Printf("Operador %s no soportado para string", operador)
+				return false
+			}
+		}
+		// Tipos incompatibles
+		mr.logger.Printf("No se puede comparar string con %T", valor2)
+		return false
+	}
+
+	// Caso 3: Comparación Numérica (int64 y float64 son intercambiables)
+	var v1Float, v2Float float64
+	var ok1, ok2 bool
+
+	// Convertir valor1 a float64
+	switch v := valor1.(type) {
+	case int64:
+		v1Float = float64(v)
+		ok1 = true
+	case float64:
+		v1Float = v
+		ok1 = true
+	}
+
+	// Convertir valor2 a float64
+	switch v := valor2.(type) {
+	case int64:
+		v2Float = float64(v)
+		ok2 = true
+	case float64:
+		v2Float = v
+		ok2 = true
+	}
+
+	if ok1 && ok2 {
+		// Comparación numérica
+		switch operador {
+		case OperadorMayorIgual:
+			return v1Float >= v2Float
+		case OperadorMenorIgual:
+			return v1Float <= v2Float
+		case OperadorIgual:
+			return math.Abs(v1Float-v2Float) < epsilon
+		case OperadorDistinto:
+			return math.Abs(v1Float-v2Float) >= epsilon
+		case OperadorMayor:
+			return v1Float > v2Float
+		case OperadorMenor:
+			return v1Float < v2Float
+		default:
+			return false
 		}
 	}
 
-	sort.Slice(datosValidos, func(i, j int) bool {
-		return datosValidos[i].Timestamp.Before(datosValidos[j].Timestamp)
-	})
-
-	return datosValidos
-}
-
-func (mr *MotorReglas) aplicarOperador(valor1 float64, operador TipoOperador, valor2 float64) bool {
-	const epsilon = 1e-9
-
-	switch operador {
-	case OperadorMayorIgual:
-		return valor1 >= valor2
-	case OperadorMenorIgual:
-		return valor1 <= valor2
-	case OperadorIgual:
-		return math.Abs(valor1-valor2) < epsilon
-	case OperadorDistinto:
-		return math.Abs(valor1-valor2) >= epsilon
-	case OperadorMayor:
-		return valor1 > valor2
-	case OperadorMenor:
-		return valor1 < valor2
-	default:
-		return false
-	}
+	// Tipos incompatibles (ej: número vs string)
+	mr.logger.Printf("No se puede comparar %T con %T", valor1, valor2)
+	return false
 }
 
 func (mr *MotorReglas) ejecutarAcciones(regla *Regla, timestamp time.Time) error {
-	valores := make(map[string]float64)
+	valores := make(map[string]interface{})
 
 	for _, condicion := range regla.Condiciones {
 		if len(condicion.SeriesGrupo) > 0 {
@@ -458,14 +611,6 @@ func (mr *MotorReglas) LimpiarDatosAntiguos(tiempoRetencion time.Duration) {
 	}
 
 	mr.logger.Printf("Limpieza completada: %d datos eliminados", datosEliminados)
-}
-
-func (mr *MotorReglas) contarDatosEnCache() int {
-	total := 0
-	for _, datos := range mr.datos {
-		total += len(datos)
-	}
-	return total
 }
 
 func (mr *MotorReglas) validarRegla(regla *Regla) error {
@@ -556,7 +701,106 @@ func (mr *MotorReglas) validarCondicion(condicion *Condicion) error {
 		}
 	}
 
+	// NUEVA VALIDACIÓN 1: Valor no puede ser nil
+	if condicion.Valor == nil {
+		return fmt.Errorf("valor de condición no puede ser nil")
+	}
+
+	// NUEVA VALIDACIÓN 2: Solo tipos soportados
+	switch condicion.Valor.(type) {
+	case bool, int64, float64, string:
+		// OK
+	default:
+		return fmt.Errorf("tipo de valor no soportado: %T (use bool, int64, float64 o string)", condicion.Valor)
+	}
+
+	// NUEVA VALIDACIÓN 3: Operadores restringidos para bool/string
+	switch condicion.Valor.(type) {
+	case bool, string:
+		if condicion.Operador != OperadorIgual && condicion.Operador != OperadorDistinto {
+			return fmt.Errorf("tipo %T solo soporta operadores == y != (recibido: %s)",
+				condicion.Valor, condicion.Operador)
+		}
+	}
+
+	// NUEVA VALIDACIÓN 4: FiltroValor
+	if condicion.FiltroValor != nil {
+		// Solo permitir filtro con AgregacionCount (por ahora)
+		if condicion.Agregacion != AgregacionCount {
+			return fmt.Errorf("FiltroValor solo está soportado con agregación 'count' (recibido: %s)", condicion.Agregacion)
+		}
+
+		// Validar tipo de FiltroValor
+		switch condicion.FiltroValor.(type) {
+		case bool, int64, float64, string:
+			// OK
+		default:
+			return fmt.Errorf("FiltroValor tipo no soportado: %T (use bool, int64, float64 o string)", condicion.FiltroValor)
+		}
+	}
+
+	// NUEVA VALIDACIÓN 5: Agregaciones incompatibles con Text/Boolean
+	if condicion.Agregacion != "" && condicion.Agregacion != AgregacionCount {
+		// Verificar si alguna serie del grupo es Text o Boolean
+		if err := mr.validarAgregacionCompatible(condicion); err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+// validarAgregacionCompatible verifica que la agregación sea compatible con los tipos de las series
+func (mr *MotorReglas) validarAgregacionCompatible(condicion *Condicion) error {
+	if mr.manager == nil {
+		return nil // No podemos validar sin manager
+	}
+
+	// Lista de series a validar
+	var seriesToValidate []string
+
+	if condicion.Serie != "" {
+		seriesToValidate = append(seriesToValidate, condicion.Serie)
+	}
+	if len(condicion.SeriesGrupo) > 0 {
+		seriesToValidate = append(seriesToValidate, condicion.SeriesGrupo...)
+	}
+
+	// Validar cada serie (no-estricto: solo si existe)
+	tiposEncontrados := make(map[tipos.TipoDatos]bool)
+
+	for _, path := range seriesToValidate {
+		serie, err := mr.manager.ObtenerSeries(path)
+		if err != nil {
+			// Serie no existe todavía - skip (validación no-estricta)
+			continue
+		}
+
+		tiposEncontrados[serie.TipoDatos] = true
+
+		// Text y Boolean NO permiten agregaciones (excepto count)
+		if serie.TipoDatos == tipos.Text || serie.TipoDatos == tipos.Boolean {
+			return fmt.Errorf("agregación '%s' no soportada para serie '%s' de tipo %s (solo 'count' es válido)",
+				condicion.Agregacion, path, serie.TipoDatos)
+		}
+	}
+
+	// VALIDACIÓN ADICIONAL: Grupos heterogéneos no permiten agregaciones
+	if len(tiposEncontrados) > 1 {
+		return fmt.Errorf("no se puede agregar series de tipos diferentes (encontrados: %v)",
+			getTiposKeys(tiposEncontrados))
+	}
+
+	return nil
+}
+
+// Helper para extraer keys de map
+func getTiposKeys(m map[tipos.TipoDatos]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k.String())
+	}
+	return keys
 }
 
 func (mr *MotorReglas) validarAccion(accion *Accion) error {
@@ -676,21 +920,12 @@ func generarClaveRegla(id string) []byte {
 }
 
 func serializarRegla(regla *Regla) ([]byte, error) {
-	var buffer bytes.Buffer
-	encoder := gob.NewEncoder(&buffer)
-	err := encoder.Encode(regla)
-	if err != nil {
-		return nil, err
-	}
-	return buffer.Bytes(), nil
+	return tipos.SerializarGob(regla)
 }
 
 func deserializarRegla(data []byte) (*Regla, error) {
 	var regla Regla
-	buffer := bytes.NewBuffer(data)
-	decoder := gob.NewDecoder(buffer)
-	err := decoder.Decode(&regla)
-	if err != nil {
+	if err := tipos.DeserializarGob(data, &regla); err != nil {
 		return nil, err
 	}
 	return &regla, nil

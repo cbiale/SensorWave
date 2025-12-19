@@ -3,6 +3,7 @@ package servidor
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -22,13 +23,31 @@ var (
 
 const LOG_HTTP string = "HTTP"
 
-// IniciarHTTP inicia un servidor HTTP en el puerto especificado
-func IniciarHTTP(puerto string) {
-	// Endpoint para manejar conexiones
-	http.HandleFunc("/sensorwave", manejadorHTTP)
+// IniciarHTTP inicia un servidor HTTP en el puerto especificado.
+// Retorna un canal que se cierra cuando el servidor está listo para aceptar conexiones.
+func IniciarHTTP(puerto string) <-chan struct{} {
+	listo := make(chan struct{})
 
-	loggerPrint(LOG_HTTP, "Iniciando servidor HTTP en :"+puerto)
-	http.ListenAndServe(":"+puerto, nil) // ver de poner loggerFatal
+	go func() {
+		// Crear un ServeMux individual para esta instancia (evita conflictos de registro)
+		mux := http.NewServeMux()
+
+		// Endpoint para manejar conexiones
+		mux.HandleFunc("/sensorwave", manejadorHTTP)
+
+		// Crear listener primero para saber cuándo está listo
+		listener, err := net.Listen("tcp", ":"+puerto)
+		if err != nil {
+			loggerFatal(LOG_HTTP, "Error al iniciar listener: %v", err)
+		}
+
+		loggerPrint(LOG_HTTP, "Servidor HTTP escuchando en :"+puerto)
+		close(listo) // Señalizar que está listo para aceptar conexiones
+
+		http.Serve(listener, mux)
+	}()
+
+	return listo
 }
 
 // manejador es el punto de entrada para todas las solicitudes HTTP

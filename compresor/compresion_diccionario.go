@@ -1,0 +1,141 @@
+package compresor
+
+import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+)
+
+// CompresorDiccionario implementa compresión por diccionario para datos categóricos
+//
+// Algoritmo:
+// 1. Construir diccionario de strings únicos con IDs (uint16)
+// 2. Reemplazar cada string con su ID
+// 3. Comprimir IDs usando RLE
+//
+// Formato de salida:
+// [num_entries: 2 bytes uint16]
+// [entry1_len: 2 bytes][entry1_data: bytes]...
+// [rle_compressed_indices]
+//
+// Límites:
+// - Máximo 65535 strings únicos
+// - Máximo 65535 caracteres por string
+type CompresorDiccionario struct{}
+
+func (c *CompresorDiccionario) Comprimir(valores []string) ([]byte, error) {
+	if len(valores) == 0 {
+		return []byte{}, nil
+	}
+
+	// Construir diccionario de strings únicos
+	dict := make(map[string]uint16)
+	entries := []string{}
+	indices := make([]uint16, len(valores))
+
+	nextID := uint16(0)
+	for i, val := range valores {
+		if id, exists := dict[val]; exists {
+			// String ya existe en diccionario
+			indices[i] = id
+		} else {
+			// Nuevo string
+			if nextID == 65535 {
+				return nil, fmt.Errorf("demasiadas entradas únicas (máximo 65535)")
+			}
+			dict[val] = nextID
+			entries = append(entries, val)
+			indices[i] = nextID
+			nextID++
+		}
+	}
+
+	var buffer bytes.Buffer
+
+	// Escribir número de entradas en el diccionario
+	if err := binary.Write(&buffer, binary.LittleEndian, uint16(len(entries))); err != nil {
+		return nil, err
+	}
+
+	// Escribir cada entrada del diccionario
+	for _, entry := range entries {
+		if len(entry) > 65535 {
+			return nil, fmt.Errorf("string demasiado largo: %d bytes (máximo 65535)", len(entry))
+		}
+		// Escribir longitud del string
+		if err := binary.Write(&buffer, binary.LittleEndian, uint16(len(entry))); err != nil {
+			return nil, err
+		}
+		// Escribir el string
+		if _, err := buffer.WriteString(entry); err != nil {
+			return nil, err
+		}
+	}
+
+	// Comprimir índices usando RLE genérico
+	compresorRLE := &CompresorRLEGenerico[uint16]{}
+	indicesComprimidos, err := compresorRLE.Comprimir(indices)
+	if err != nil {
+		return nil, fmt.Errorf("error al comprimir índices: %v", err)
+	}
+
+	// Agregar índices comprimidos
+	buffer.Write(indicesComprimidos)
+
+	return buffer.Bytes(), nil
+}
+
+func (c *CompresorDiccionario) Descomprimir(datos []byte) ([]string, error) {
+	if len(datos) == 0 {
+		return []string{}, nil
+	}
+
+	reader := bytes.NewReader(datos)
+
+	// Leer número de entradas en el diccionario
+	var numEntries uint16
+	if err := binary.Read(reader, binary.LittleEndian, &numEntries); err != nil {
+		return nil, fmt.Errorf("error leyendo número de entradas: %v", err)
+	}
+
+	// Leer diccionario
+	entries := make([]string, numEntries)
+	for i := uint16(0); i < numEntries; i++ {
+		// Leer longitud del string
+		var strLen uint16
+		if err := binary.Read(reader, binary.LittleEndian, &strLen); err != nil {
+			return nil, fmt.Errorf("error leyendo longitud de string %d: %v", i, err)
+		}
+
+		// Leer el string
+		strBytes := make([]byte, strLen)
+		if _, err := reader.Read(strBytes); err != nil {
+			return nil, fmt.Errorf("error leyendo string %d: %v", i, err)
+		}
+		entries[i] = string(strBytes)
+	}
+
+	// Leer índices comprimidos (resto de los datos)
+	indicesComprimidos := make([]byte, reader.Len())
+	if _, err := reader.Read(indicesComprimidos); err != nil {
+		return nil, fmt.Errorf("error leyendo índices comprimidos: %v", err)
+	}
+
+	// Descomprimir índices usando RLE
+	compresorRLE := &CompresorRLEGenerico[uint16]{}
+	indices, err := compresorRLE.Descomprimir(indicesComprimidos)
+	if err != nil {
+		return nil, fmt.Errorf("error al descomprimir índices: %v", err)
+	}
+
+	// Reconstruir strings usando el diccionario
+	resultado := make([]string, len(indices))
+	for i, idx := range indices {
+		if idx >= numEntries {
+			return nil, fmt.Errorf("índice fuera de rango: %d (máximo %d)", idx, numEntries-1)
+		}
+		resultado[i] = entries[idx]
+	}
+
+	return resultado, nil
+}

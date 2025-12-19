@@ -2,38 +2,14 @@ package compresor
 
 import (
 	"fmt"
-	"math"
-	"unsafe"
 
 	"github.com/cbiale/sensorwave/tipos"
 )
 
 // Utilidades para conversión de bytes
 
-// float64ToBytes convierte un float64 a 8 bytes
-func float64ToBytes(f float64) []byte {
-	bits := math.Float64bits(f)
-	bytes := make([]byte, 8)
-	for i := 0; i < 8; i++ {
-		bytes[i] = byte(bits >> (56 - i*8))
-	}
-	return bytes
-}
-
-// bytesToFloat64 convierte 8 bytes a float64
-func bytesToFloat64(bytes []byte) float64 {
-	if len(bytes) < 8 {
-		return 0.0
-	}
-	var bits uint64
-	for i := 0; i < 8; i++ {
-		bits |= uint64(bytes[i]) << (56 - i*8)
-	}
-	return math.Float64frombits(bits)
-}
-
-// int64ToBytes convierte un int64 a 8 bytes
-func int64ToBytes(i int64) []byte {
+// Int64ToBytes convierte un int64 a 8 bytes
+func Int64ToBytes(i int64) []byte {
 	bytes := make([]byte, 8)
 	for j := 0; j < 8; j++ {
 		bytes[j] = byte(i >> (56 - j*8))
@@ -41,8 +17,8 @@ func int64ToBytes(i int64) []byte {
 	return bytes
 }
 
-// bytesToInt64 convierte 8 bytes a int64
-func bytesToInt64(bytes []byte) int64 {
+// BytesToInt64 convierte 8 bytes a int64
+func BytesToInt64(bytes []byte) int64 {
 	if len(bytes) < 8 {
 		return 0
 	}
@@ -74,28 +50,6 @@ func bytesToInt32(bytes []byte) int32 {
 	return i
 }
 
-// float32ToBytes convierte un float32 a 4 bytes usando unsafe para performance
-func float32ToBytes(f float32) []byte {
-	bits := *(*uint32)(unsafe.Pointer(&f))
-	bytes := make([]byte, 4)
-	for i := 0; i < 4; i++ {
-		bytes[i] = byte(bits >> (24 - i*8))
-	}
-	return bytes
-}
-
-// bytesToFloat32 convierte 4 bytes a float32 usando unsafe para performance
-func bytesToFloat32(bytes []byte) float32 {
-	if len(bytes) < 4 {
-		return 0.0
-	}
-	var bits uint32
-	for i := 0; i < 4; i++ {
-		bits |= uint32(bytes[i]) << (24 - i*8)
-	}
-	return *(*float32)(unsafe.Pointer(&bits))
-}
-
 // extraerValores extrae los valores de un slice de mediciones
 func ExtraerValores(mediciones []tipos.Medicion) []interface{} {
 	valores := make([]interface{}, len(mediciones))
@@ -112,6 +66,83 @@ func ExtraerTiempos(mediciones []tipos.Medicion) []int64 {
 		tiempos[i] = medicion.Tiempo
 	}
 	return tiempos
+}
+
+// Funciones de conversión de tipo para valores
+
+// ConvertirAInt64Array convierte []interface{} a []int64
+func ConvertirAInt64Array(valores []interface{}) ([]int64, error) {
+	resultado := make([]int64, len(valores))
+	for i, v := range valores {
+		switch val := v.(type) {
+		case int:
+			resultado[i] = int64(val)
+		case int32:
+			resultado[i] = int64(val)
+		case int64:
+			resultado[i] = val
+		case float64:
+			resultado[i] = int64(val)
+		default:
+			return nil, fmt.Errorf("no se puede convertir tipo %T a int64 en índice %d", v, i)
+		}
+	}
+	return resultado, nil
+}
+
+// ConvertirAFloat64Array convierte []interface{} a []float64
+func ConvertirAFloat64Array(valores []interface{}) ([]float64, error) {
+	resultado := make([]float64, len(valores))
+	for i, v := range valores {
+		switch val := v.(type) {
+		case float32:
+			resultado[i] = float64(val)
+		case float64:
+			resultado[i] = val
+		case int:
+			resultado[i] = float64(val)
+		case int32:
+			resultado[i] = float64(val)
+		case int64:
+			resultado[i] = float64(val)
+		default:
+			return nil, fmt.Errorf("no se puede convertir tipo %T a float64 en índice %d", v, i)
+		}
+	}
+	return resultado, nil
+}
+
+// ConvertirAStringArray convierte []interface{} a []string
+func ConvertirAStringArray(valores []interface{}) ([]string, error) {
+	resultado := make([]string, len(valores))
+	for i, v := range valores {
+		str, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("no se puede convertir tipo %T a string en índice %d", v, i)
+		}
+		resultado[i] = str
+	}
+	return resultado, nil
+}
+
+// ConvertirABoolArray convierte []interface{} a []bool
+func ConvertirABoolArray(valores []interface{}) ([]bool, error) {
+	resultado := make([]bool, len(valores))
+	for i, v := range valores {
+		switch val := v.(type) {
+		case bool:
+			resultado[i] = val
+		case int:
+			resultado[i] = val != 0
+		case int64:
+			resultado[i] = val != 0
+		case float64:
+			resultado[i] = val != 0.0
+		default:
+			return nil, fmt.Errorf("no se puede convertir tipo %T a bool en índice %d", v, i)
+		}
+	}
+	return resultado, nil
 }
 
 // combinarDatos combina datos de tiempo y valores comprimidos con metadata

@@ -1,167 +1,174 @@
+/*
+## Algoritmo de Compresión Bits - Para enteros en rangos pequeños
+
+Objetivo: Comprimir enteros que se encuentran en un rango limitado usando
+el mínimo número de bits necesarios.
+
+Entrada: Array de valores enteros [v₀, v₁, v₂, ..., vₙ]
+
+Salida: Datos comprimidos con formato:
+• count: número de valores (4 bytes uint32)
+• min: valor mínimo (8 bytes int64)
+• max: valor máximo (8 bytes int64)
+• bits_per_value: bits necesarios por valor (1 byte uint8, rango 0-64)
+• packed_data: valores empaquetados en bits
+
+Algoritmo:
+
+1. Calcular rango:
+ • min ← valor mínimo del array
+ • max ← valor máximo del array
+ • range ← max - min
+
+2. Calcular bits necesarios:
+ • Si range == 0: bits = 0 (todos los valores son iguales)
+ • Sino: bits = ceil(log2(range + 1))
+ • Máximo 64 bits
+
+3. Empaquetar valores:
+ • Para cada valor v:
+   • normalized ← v - min
+   • Escribir normalized usando bits_per_value bits
+
+4. Formato final:
+ • [count: 4 bytes][min: 8 bytes][max: 8 bytes][bits_per_value: 1 byte][packed_data]
+
+Complejidad: O(n) tiempo, O(1) espacio adicional
+
+Casos óptimos:
+• Valores en rango 0-255: 8 bits por valor
+• Valores en rango 0-15: 4 bits por valor
+• Valores todos iguales: 0 bits por valor (solo header)
+*/
+
 package compresor
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
-	"math"
+	"math/bits"
 )
 
-// CompressorBits implementa compresión por bits para valores que pueden representarse con menos bits
-type CompressorBits struct{}
+// CompresorBitsGenerico implementa compresión por bits para enteros
+// NOTA: Aunque el constraint Numeric permite int64 y float64, este compresor
+// solo tiene sentido para valores enteros (int64) ya que optimiza rangos discretos.
+// El sistema normaliza todos los enteros a int64 antes de la compresión.
+type CompresorBitsGenerico[T Numeric] struct{}
 
-func (c *CompressorBits) Comprimir(valores []interface{}) []byte {
+// Comprimir comprime valores enteros usando el mínimo de bits necesarios
+func (c *CompresorBitsGenerico[T]) Comprimir(valores []T) ([]byte, error) {
 	if len(valores) == 0 {
-		return []byte{}
+		return []byte{}, nil
 	}
 
-	resultado := make([]byte, 0)
-
-	// Convertir todos los valores a float64
-	valoresFloat := make([]float64, len(valores))
-	for i, valor := range valores {
-		if v, ok := valor.(float64); ok {
-			valoresFloat[i] = v
-		} else {
-			valoresFloat[i] = 0.0
-		}
+	// Convertir a int64 para cálculos
+	valoresInt := make([]int64, len(valores))
+	for i, v := range valores {
+		valoresInt[i] = toInt64(v)
 	}
 
-	// Almacenar número de elementos (4 bytes)
-	numElementos := len(valoresFloat)
-	resultado = append(resultado, byte(numElementos>>24))
-	resultado = append(resultado, byte(numElementos>>16))
-	resultado = append(resultado, byte(numElementos>>8))
-	resultado = append(resultado, byte(numElementos))
-
-	if numElementos == 0 {
-		return resultado
-	}
-
-	// Analizar los valores para determinar si son enteros pequeños
-	sonEnteros := true
-	valorMin := valoresFloat[0]
-	valorMax := valoresFloat[0]
-
-	for _, valor := range valoresFloat {
-		// Verificar si es un entero
-		if valor != float64(int64(valor)) {
-			sonEnteros = false
+	// Calcular min y max
+	min := valoresInt[0]
+	max := valoresInt[0]
+	for _, v := range valoresInt {
+		if v < min {
+			min = v
 		}
-		if valor < valorMin {
-			valorMin = valor
-		}
-		if valor > valorMax {
-			valorMax = valor
+		if v > max {
+			max = v
 		}
 	}
 
-	// Si son enteros pequeños, aplicar compresión por bits
-	if sonEnteros && valorMin >= 0 && valorMax <= 255 {
-		// Usar 1 byte por valor
-		resultado = append(resultado, 0x01) // Flag: 1 byte por valor
-		for _, valor := range valoresFloat {
-			resultado = append(resultado, byte(int64(valor)))
-		}
-	} else if sonEnteros && valorMin >= -32768 && valorMax <= 32767 {
-		// Usar 2 bytes por valor
-		resultado = append(resultado, 0x02) // Flag: 2 bytes por valor
-		for _, valor := range valoresFloat {
-			valorInt := int16(valor)
-			resultado = append(resultado, byte(valorInt>>8))
-			resultado = append(resultado, byte(valorInt))
-		}
-	} else if sonEnteros && valorMin >= -2147483648 && valorMax <= 2147483647 {
-		// Usar 4 bytes por valor
-		resultado = append(resultado, 0x04) // Flag: 4 bytes por valor
-		for _, valor := range valoresFloat {
-			valorInt := int32(valor)
-			resultado = append(resultado, int32ToBytes(valorInt)...)
-		}
+	// Calcular bits necesarios
+	rangeVal := max - min
+	var bitsNecesarios uint8
+
+	if rangeVal == 0 {
+		// Todos los valores son iguales
+		bitsNecesarios = 0
 	} else {
-		// Usar float32 (4 bytes) en lugar de float64 (8 bytes) para ahorrar espacio
-		resultado = append(resultado, 0x08) // Flag: 4 bytes float32
-		for _, valor := range valoresFloat {
-			valorFloat32 := float32(valor)
-			resultado = append(resultado, float32ToBytes(valorFloat32)...)
-		}
+		// Calcular bits necesarios: ceil(log2(range + 1))
+		bitsNecesarios = uint8(64 - bits.LeadingZeros64(uint64(rangeVal)))
 	}
 
-	return resultado
+	// Serializar header
+	var buffer bytes.Buffer
+	// Escribir count de valores (4 bytes)
+	binary.Write(&buffer, binary.LittleEndian, uint32(len(valores)))
+	binary.Write(&buffer, binary.LittleEndian, min)
+	binary.Write(&buffer, binary.LittleEndian, max)
+	buffer.WriteByte(bitsNecesarios)
+
+	// Si todos los valores son iguales, no necesitamos datos
+	if bitsNecesarios == 0 {
+		return buffer.Bytes(), nil
+	}
+
+	// Empaquetar valores
+	writer := newBitWriter()
+	for _, v := range valoresInt {
+		normalized := uint64(v - min)
+		writer.writeBits(normalized, int(bitsNecesarios))
+	}
+
+	// Agregar datos empaquetados
+	buffer.Write(writer.getBytes())
+
+	return buffer.Bytes(), nil
 }
 
-func (c *CompressorBits) Descomprimir(datos []byte) ([]interface{}, error) {
+// Descomprimir descomprime valores empaquetados en bits
+func (c *CompresorBitsGenerico[T]) Descomprimir(datos []byte) ([]T, error) {
 	if len(datos) == 0 {
-		return []interface{}{}, nil
+		return []T{}, nil
 	}
 
-	if len(datos) < 5 { // 4 bytes para numElementos + 1 byte para flag
-		return nil, fmt.Errorf("datos insuficientes para descomprimir Bits")
+	reader := bytes.NewReader(datos)
+
+	// Leer header
+	var count uint32
+	var min, max int64
+	var bitsNecesarios uint8
+
+	if err := binary.Read(reader, binary.LittleEndian, &count); err != nil {
+		return nil, fmt.Errorf("error leyendo count: %v", err)
+	}
+	if err := binary.Read(reader, binary.LittleEndian, &min); err != nil {
+		return nil, fmt.Errorf("error leyendo min: %v", err)
+	}
+	if err := binary.Read(reader, binary.LittleEndian, &max); err != nil {
+		return nil, fmt.Errorf("error leyendo max: %v", err)
+	}
+	if err := binary.Read(reader, binary.LittleEndian, &bitsNecesarios); err != nil {
+		return nil, fmt.Errorf("error leyendo bits_per_value: %v", err)
 	}
 
-	offset := 0
-
-	// Leer número de elementos
-	numElementos := int(datos[0])<<24 | int(datos[1])<<16 | int(datos[2])<<8 | int(datos[3])
-	offset += 4
-
-	if numElementos == 0 {
-		return []interface{}{}, nil
+	// Si bits es 0, todos los valores son iguales al min
+	if bitsNecesarios == 0 {
+		resultado := make([]T, count)
+		for i := uint32(0); i < count; i++ {
+			resultado[i] = fromInt64[T](min)
+		}
+		return resultado, nil
 	}
 
-	// Leer flag de tipo de compresión
-	flag := datos[offset]
-	offset++
+	// Leer datos empaquetados
+	packedData := make([]byte, reader.Len())
+	reader.Read(packedData)
 
-	resultado := make([]interface{}, 0, numElementos)
+	bitReader := newBitReader(packedData)
+	resultado := make([]T, 0, count)
 
-	switch flag {
-	case 0x01: // 1 byte por valor
-		if offset+numElementos > len(datos) {
-			return nil, fmt.Errorf("datos insuficientes para valores de 1 byte")
-		}
-		for i := 0; i < numElementos; i++ {
-			valor := float64(datos[offset+i])
-			resultado = append(resultado, valor)
+	// Leer exactamente count valores
+	for i := uint32(0); i < count; i++ {
+		normalized, err := bitReader.readBits(int(bitsNecesarios))
+		if err != nil {
+			return nil, fmt.Errorf("error leyendo valor %d: %v", i, err)
 		}
 
-	case 0x02: // 2 bytes por valor
-		if offset+numElementos*2 > len(datos) {
-			return nil, fmt.Errorf("datos insuficientes para valores de 2 bytes")
-		}
-		for i := 0; i < numElementos; i++ {
-			valorInt := int16(datos[offset])<<8 | int16(datos[offset+1])
-			valor := float64(valorInt)
-			resultado = append(resultado, valor)
-			offset += 2
-		}
-
-	case 0x04: // 4 bytes entero por valor
-		if offset+numElementos*4 > len(datos) {
-			return nil, fmt.Errorf("datos insuficientes para valores de 4 bytes")
-		}
-		for i := 0; i < numElementos; i++ {
-			valorInt := bytesToInt32(datos[offset : offset+4])
-			valor := float64(valorInt)
-			resultado = append(resultado, valor)
-			offset += 4
-		}
-
-	case 0x08: // 4 bytes float32 por valor
-		if offset+numElementos*4 > len(datos) {
-			return nil, fmt.Errorf("datos insuficientes para valores float32")
-		}
-		for i := 0; i < numElementos; i++ {
-			valorFloat32 := bytesToFloat32(datos[offset : offset+4])
-			// Verificar NaN o Inf
-			if math.IsNaN(float64(valorFloat32)) || math.IsInf(float64(valorFloat32), 0) {
-				resultado = append(resultado, 0.0)
-			} else {
-				resultado = append(resultado, float64(valorFloat32))
-			}
-			offset += 4
-		}
-
-	default:
-		return nil, fmt.Errorf("flag de compresión desconocido: %x", flag)
+		valor := int64(normalized) + min
+		resultado = append(resultado, fromInt64[T](valor))
 	}
 
 	return resultado, nil

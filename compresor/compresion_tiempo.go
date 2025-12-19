@@ -19,7 +19,7 @@ func CompresionDeltaDeltaTiempo(mediciones []tipos.Medicion) []byte {
 
 	// Almacenar el primer tiempo sin compresión (8 bytes)
 	primerTiempo := tiempos[0]
-	resultado = append(resultado, int64ToBytes(primerTiempo)...)
+	resultado = append(resultado, Int64ToBytes(primerTiempo)...)
 
 	if len(tiempos) == 1 {
 		return resultado
@@ -29,7 +29,7 @@ func CompresionDeltaDeltaTiempo(mediciones []tipos.Medicion) []byte {
 	var deltaTiempoAnterior int64
 	if len(tiempos) > 1 {
 		deltaTiempoAnterior = tiempos[1] - tiempos[0]
-		resultado = append(resultado, int64ToBytes(deltaTiempoAnterior)...)
+		resultado = append(resultado, Int64ToBytes(deltaTiempoAnterior)...)
 	}
 
 	if len(tiempos) == 2 {
@@ -62,7 +62,7 @@ func CompresionDeltaDeltaTiempo(mediciones []tipos.Medicion) []byte {
 		} else {
 			// 8 bytes + flag
 			deltaBytes = append(deltaBytes, 0x03) // Flag para 8 bytes
-			deltaBytes = append(deltaBytes, int64ToBytes(deltaDeltaTiempo)...)
+			deltaBytes = append(deltaBytes, Int64ToBytes(deltaDeltaTiempo)...)
 		}
 
 		resultado = append(resultado, deltaBytes...)
@@ -88,7 +88,7 @@ func DescompresionDeltaDeltaTiempo(datos []byte) ([]int64, error) {
 	offset := 0
 
 	// Leer primer tiempo (8 bytes)
-	primerTiempo := bytesToInt64(datos[offset : offset+8])
+	primerTiempo := BytesToInt64(datos[offset : offset+8])
 	resultado = append(resultado, primerTiempo)
 	offset += 8
 
@@ -101,7 +101,7 @@ func DescompresionDeltaDeltaTiempo(datos []byte) ([]int64, error) {
 		return nil, fmt.Errorf("datos insuficientes para primera delta")
 	}
 
-	deltaTiempoAnterior := bytesToInt64(datos[offset : offset+8])
+	deltaTiempoAnterior := BytesToInt64(datos[offset : offset+8])
 	segundoTiempo := primerTiempo + deltaTiempoAnterior
 	resultado = append(resultado, segundoTiempo)
 	offset += 8
@@ -150,7 +150,7 @@ func DescompresionDeltaDeltaTiempo(datos []byte) ([]int64, error) {
 			if offset+8 > len(datos) {
 				return nil, fmt.Errorf("datos insuficientes para delta-delta de 8 bytes")
 			}
-			deltaDeltaTiempo = bytesToInt64(datos[offset : offset+8])
+			deltaDeltaTiempo = BytesToInt64(datos[offset : offset+8])
 			offset += 8
 
 		default:

@@ -1,4 +1,4 @@
-# Pruebas para el CASE 2025
+    # Pruebas para el CASE 2025
 
 ## Ejemplo de aplicación
 
@@ -9,4 +9,3 @@ En el directorio `ejemplo_case` se encuentra el ejemplo de aplicación que se de
 ## Evaluación de latencia
 
 En el directorio `latencia_case` se encuentran los programas usados para obtener los resultados del apartado `III-B`.
-

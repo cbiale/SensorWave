@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Script para iniciar el servidor central NATS.io
+# Script para iniciar el servidor NATS.io
 echo "Iniciando servidor NATS.io..."
 
 # Verificar si Docker está corriendo

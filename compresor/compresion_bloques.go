@@ -4,42 +4,37 @@ import (
 	"github.com/cbiale/sensorwave/tipos"
 )
 
-// CompressorBloque define la interfaz para compresores de bloques (nivel 2)
-type CompressorBloque interface {
+// CompresorBloque define la interfaz para compresores de bloques (nivel 2)
+type CompresorBloque interface {
 	Comprimir(datos []byte) ([]byte, error)
 	Descomprimir(datos []byte) ([]byte, error)
 }
 
-// obtenerCompressorBloque factory para crear compresores de bloques
-func ObtenerCompressorBloque(tipo tipos.TipoCompresionBloque) CompressorBloque {
+// obtenerCompresorBloque factory para crear compresores de bloques
+func ObtenerCompresorBloque(tipo tipos.TipoCompresionBloque) CompresorBloque {
 	switch tipo {
 	case tipos.LZ4:
-		return &CompressorLZ4{}
+		return &CompresorLZ4{}
 	case tipos.ZSTD:
-		return &CompressorZSTD{}
+		return &CompresorZSTD{}
 	case tipos.Snappy:
-		return &CompressorSnappy{}
+		return &CompresorSnappy{}
 	case tipos.Gzip:
-		return &CompressorGzip{}
+		return &CompresorGzip{}
 	case tipos.Ninguna:
-		return &CompressorBloqueNinguno{}
+		return &CompresorBloqueNinguno{}
 	default:
-		return &CompressorBloqueNinguno{}
+		return &CompresorBloqueNinguno{}
 	}
 }
 
-// obtenerCompressorGzip devuelve el compresor Gzip (como alternativa)
-func obtenerCompressorGzip() CompressorBloque {
-	return &CompressorGzip{}
-}
+// CompresorBloqueNinguno implementa sin compresión para bloques
+type CompresorBloqueNinguno struct{}
 
-// CompressorBloqueNinguno implementa sin compresión para bloques
-type CompressorBloqueNinguno struct{}
-
-func (c *CompressorBloqueNinguno) Comprimir(datos []byte) ([]byte, error) {
+func (c *CompresorBloqueNinguno) Comprimir(datos []byte) ([]byte, error) {
 	return datos, nil
 }
 
-func (c *CompressorBloqueNinguno) Descomprimir(datos []byte) ([]byte, error) {
+func (c *CompresorBloqueNinguno) Descomprimir(datos []byte) ([]byte, error) {
 	return datos, nil
 }

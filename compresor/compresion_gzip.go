@@ -7,10 +7,12 @@ import (
 	"io"
 )
 
-// CompressorGzip implementa compresión Gzip para bloques usando la biblioteca estándar
-type CompressorGzip struct{}
+// CompresorGzip implementa compresión Gzip
+type CompresorGzip struct{}
 
-func (c *CompressorGzip) Comprimir(datos []byte) ([]byte, error) {
+// Comprimir comprime los datos usando Gzip
+func (c *CompresorGzip) Comprimir(datos []byte) ([]byte, error) {
+	// Si no hay datos, retornar vacío
 	if len(datos) == 0 {
 		return []byte{}, nil
 	}
@@ -33,24 +35,30 @@ func (c *CompressorGzip) Comprimir(datos []byte) ([]byte, error) {
 		return []byte{}, fmt.Errorf("error al cerrar writer gzip: %v", err)
 	}
 
+	// Retornar datos comprimidos
 	return buf.Bytes(), nil
 }
 
-func (c *CompressorGzip) Descomprimir(datos []byte) ([]byte, error) {
+// Descomprimir descomprime los datos usando Gzip
+func (c *CompresorGzip) Descomprimir(datos []byte) ([]byte, error) {
+	// Si no hay datos, retornar vacío
 	if len(datos) == 0 {
 		return []byte{}, nil
 	}
 
+	// Crear reader de gzip
     descomprimido, err := gzip.NewReader(bytes.NewReader(datos))
 	if err != nil {
 		return []byte{}, fmt.Errorf("error al crear reader gzip: %v", err)
 	}
 	defer descomprimido.Close()
 	
+	// Leer datos descomprimidos
 	resultado, err := io.ReadAll(descomprimido)
 	if err != nil {
 		return []byte{}, fmt.Errorf("error al leer datos gzip: %v", err)
 	}
 
+	// Retornar datos descomprimidos
 	return resultado, nil
 }

@@ -24,14 +24,74 @@ Un cliente puede realizar consultas locales o globales, donde las consultas loca
 
 En el sistema propuesto, las aplicaciones desplegadas al borde de la red pueden continuar funcionando ante eventuales problemas de conectividad entre el borde y la nube debido a que los nodos al borde disponen de almacenamiento local y un motor de reglas. Las consultas locales no se ven afectadas ante problemas de conectividad, pero si se realiza una consulta global el sistema retorna como parte de la respuesta a qué nodos al borde no pudo acceder.
 
+## Estructura del Proyecto
+
+```
+proyecto_final/
+├── compresor/                    # Algoritmos de compresión
+│   ├── compresion_bits.go        # Compresión de bits
+│   ├── compresion_bloques.go     # Compresión de bloques (LZ4, ZSTD, Snappy, Gzip)
+│   ├── compresion_deltadelta.go  # Delta-of-delta
+│   ├── compresion_diccionario.go # Diccionario
+│   ├── compresion_gzip.go        # Gzip
+│   ├── compresion_lz4.go         # LZ4
+│   ├── compresion_ninguno.go     # Sin compresión
+│   ├── compresion_rle.go         # Run-Length Encoding
+│   ├── compresion_snappy.go      # Snappy
+│   ├── compresion_tiempo.go      # Compresión temporal
+│   ├── compresion_utils.go       # Utilidades
+│   ├── compresion_xor.go         # XOR
+│   └── compresion_zstd.go        # Zstandard
+├── contenedores/                 # Scripts de infraestructura
+│   ├── iniciar_mqtt.sh           # Broker MQTT local
+│   ├── iniciar_nats.sh           # NATS local
+├── despachador/                  # Nodo despachador (nube/borde)
+│   └── despachador.go            # Servicio despachador
+├── edge/                         # Nodo edge (borde)
+│   ├── comunicacion_nube.go      # Registro en S3
+│   ├── consultas.go              # Consultas de series
+│   ├── edge.go                   # Manager principal
+│   ├── migracion_datos.go        # Migración a S3
+│   ├── reglas.go                 # Motor de reglas
+│   ├── series.go                 # Gestión de series
+│   └── utils.go                  # Utilidades
+├── middleware/                   # Capa de comunicación
+│   ├── cliente_coap/             # Cliente CoAP
+│   ├── cliente_http/             # Cliente HTTP
+│   ├── cliente_mqtt/             # Cliente MQTT
+│   ├── cliente_nats/             # Cliente NATS
+│   ├── servidor/                 # Servidores multi-protocolo
+│   └── cliente_lib.go            # Librería cliente
+├── test/                         # Tests automatizados
+│   ├── despachador/              # Test del despachador
+│   ├── edge/                     # Tests del edge
+│   │   ├── path_tags/            # Tests de path + tags
+│   │   ├── reglas/               # Tests del motor de reglas
+│   │   └── series/               # Tests de series temporales
+│   └── middleware/               # Tests del middleware
+│       ├── latencia_case/        # Pruebas de latencia
+│       └── prueba_escalabilidad/ # Pruebas de escalabilidad
+├── tipos/                        # Tipos de datos compartidos
+│   ├── compresion.go             # Tipos de compresión
+│   ├── medicion.go               # Estructura de medición
+│   ├── nodo.go                   # Estructura de nodo
+│   ├── s3.go                     # Configuración S3 y opciones
+│   └── tipo_datos.go             # Tipos de datos (Boolean, Integer, Real, Text)
+├── .gitignore
+├── go.mod
+├── go.sum
+├── Makefile                      # Comandos de build y test
+└── README.md                     # Este archivo
+```
+
 ## Herramientas a utilizar
 
 Lenguajes de programación:
 - Golang
-- C (ESP-IDF)
 
 Artefactos:
 - Middleware para obtener datos de sensores y actuadores al borde y para comunicar el borde con la nube.
 - Base de datos al borde de la red basada en Pebble
-- Base de datos en la nube basada en FoundationDB
+- Almacenamiento en la nube basado en S3-compatible (Garage, AWS S3, Cloudflare R2, MinIO, etc.)
 - Servicio despachador de consultas en la nube sin estado
+- Registro de nodos unificado en S3 (usado por edge y despachador)

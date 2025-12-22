@@ -366,11 +366,11 @@ func TestCerrar(t *testing.T) {
 }
 
 // ============================================================================
-// TESTS DE BUSCAR NODO Y SERIE
+// TESTS DE BUSCAR SERIES POR PATH
 // ============================================================================
 
-// TestBuscarNodoYSerie_Exacto verifica busqueda exacta por nombre de serie
-func TestBuscarNodoYSerie_Exacto(t *testing.T) {
+// TestBuscarSeriesPorPath_Exacto verifica busqueda exacta por nombre de serie
+func TestBuscarSeriesPorPath_Exacto(t *testing.T) {
 	serie := tipos.Serie{
 		SerieId:   1,
 		Path:      "/sensores/temperatura",
@@ -388,18 +388,19 @@ func TestBuscarNodoYSerie_Exacto(t *testing.T) {
 		},
 	}
 
-	nodo, serieEncontrada, err := m.buscarNodoYSerie("/sensores/temperatura")
+	resultados, err := m.buscarSeriesPorPath("/sensores/temperatura")
 
 	assert.NoError(t, err)
-	assert.Equal(t, "nodo1", nodo.NodoID)
-	assert.Equal(t, serie.SerieId, serieEncontrada.SerieId)
-	assert.Equal(t, serie.Path, serieEncontrada.Path)
+	assert.Len(t, resultados, 1)
+	assert.Equal(t, "nodo1", resultados[0].nodo.NodoID)
+	assert.Equal(t, serie.SerieId, resultados[0].serie.SerieId)
+	assert.Equal(t, "/sensores/temperatura", resultados[0].path)
 
-	t.Log("buscarNodoYSerie encuentra serie por nombre exacto")
+	t.Log("buscarSeriesPorPath encuentra serie por nombre exacto")
 }
 
-// TestBuscarNodoYSerie_NoEncontrada verifica error cuando no existe la serie
-func TestBuscarNodoYSerie_NoEncontrada(t *testing.T) {
+// TestBuscarSeriesPorPath_NoEncontrada verifica error cuando no existe la serie
+func TestBuscarSeriesPorPath_NoEncontrada(t *testing.T) {
 	m := &ManagerDespachador{
 		nodos: map[string]*tipos.Nodo{
 			"nodo1": {
@@ -411,57 +412,104 @@ func TestBuscarNodoYSerie_NoEncontrada(t *testing.T) {
 		},
 	}
 
-	_, _, err := m.buscarNodoYSerie("/sensores/humedad")
+	_, err := m.buscarSeriesPorPath("/sensores/humedad")
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no encontrada")
 
-	t.Log("buscarNodoYSerie retorna error cuando serie no existe")
+	t.Log("buscarSeriesPorPath retorna error cuando serie no existe")
 }
 
-// TestBuscarNodoYSerie_SinNodos verifica error cuando no hay nodos
-func TestBuscarNodoYSerie_SinNodos(t *testing.T) {
+// TestBuscarSeriesPorPath_SinNodos verifica error cuando no hay nodos
+func TestBuscarSeriesPorPath_SinNodos(t *testing.T) {
 	m := &ManagerDespachador{
 		nodos: make(map[string]*tipos.Nodo),
 	}
 
-	_, _, err := m.buscarNodoYSerie("/sensores/temperatura")
+	_, err := m.buscarSeriesPorPath("/sensores/temperatura")
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no encontrada")
 
-	t.Log("buscarNodoYSerie retorna error cuando no hay nodos")
+	t.Log("buscarSeriesPorPath retorna error cuando no hay nodos")
 }
 
-// TestBuscarNodoYSerie_PorPrefijo verifica busqueda por prefijo
-func TestBuscarNodoYSerie_PorPrefijo(t *testing.T) {
-	serie := tipos.Serie{
-		SerieId: 1,
-		Path:    "/sensores/temp",
-	}
+// TestBuscarSeriesPorPath_Wildcard verifica busqueda con patron wildcard
+func TestBuscarSeriesPorPath_Wildcard(t *testing.T) {
 	m := &ManagerDespachador{
 		nodos: map[string]*tipos.Nodo{
 			"nodo1": {
 				NodoID: "nodo1",
 				Series: map[string]tipos.Serie{
-					"/sensores/temp": serie,
+					"sensores/temperatura": {SerieId: 1, Path: "sensores/temperatura"},
+					"sensores/humedad":     {SerieId: 2, Path: "sensores/humedad"},
+					"actuadores/riego":     {SerieId: 3, Path: "actuadores/riego"},
 				},
 			},
 		},
 	}
 
-	// Buscar con prefijo mas largo
-	nodo, serieEncontrada, err := m.buscarNodoYSerie("/sensores/temp/interior")
+	// Buscar con wildcard */temperatura
+	resultados, err := m.buscarSeriesPorPath("*/temperatura")
 
 	assert.NoError(t, err)
-	assert.Equal(t, "nodo1", nodo.NodoID)
-	assert.Equal(t, serie.SerieId, serieEncontrada.SerieId)
+	assert.Len(t, resultados, 1)
+	assert.Equal(t, "sensores/temperatura", resultados[0].path)
 
-	t.Log("buscarNodoYSerie encuentra serie por prefijo")
+	t.Log("buscarSeriesPorPath encuentra serie con patron wildcard")
 }
 
-// TestBuscarNodoYSerie_MultiplesNodos verifica busqueda en multiples nodos
-func TestBuscarNodoYSerie_MultiplesNodos(t *testing.T) {
+// TestBuscarSeriesPorPath_WildcardMultiples verifica busqueda con wildcard que retorna multiples
+func TestBuscarSeriesPorPath_WildcardMultiples(t *testing.T) {
+	m := &ManagerDespachador{
+		nodos: map[string]*tipos.Nodo{
+			"nodo1": {
+				NodoID: "nodo1",
+				Series: map[string]tipos.Serie{
+					"sensores/temperatura": {SerieId: 1, Path: "sensores/temperatura"},
+					"sensores/humedad":     {SerieId: 2, Path: "sensores/humedad"},
+					"actuadores/riego":     {SerieId: 3, Path: "actuadores/riego"},
+				},
+			},
+		},
+	}
+
+	// Buscar con wildcard sensores/*
+	resultados, err := m.buscarSeriesPorPath("sensores/*")
+
+	assert.NoError(t, err)
+	assert.Len(t, resultados, 2)
+
+	paths := []string{resultados[0].path, resultados[1].path}
+	assert.Contains(t, paths, "sensores/temperatura")
+	assert.Contains(t, paths, "sensores/humedad")
+
+	t.Log("buscarSeriesPorPath encuentra multiples series con wildcard")
+}
+
+// TestBuscarSeriesPorPath_WildcardSinCoincidencias verifica error cuando wildcard no tiene matches
+func TestBuscarSeriesPorPath_WildcardSinCoincidencias(t *testing.T) {
+	m := &ManagerDespachador{
+		nodos: map[string]*tipos.Nodo{
+			"nodo1": {
+				NodoID: "nodo1",
+				Series: map[string]tipos.Serie{
+					"/sensores/temperatura": {SerieId: 1},
+				},
+			},
+		},
+	}
+
+	_, err := m.buscarSeriesPorPath("*/presion")
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no encontrada")
+
+	t.Log("buscarSeriesPorPath retorna error cuando wildcard no tiene coincidencias")
+}
+
+// TestBuscarSeriesPorPath_MultiplesNodos verifica busqueda en multiples nodos
+func TestBuscarSeriesPorPath_MultiplesNodos(t *testing.T) {
 	m := &ManagerDespachador{
 		nodos: map[string]*tipos.Nodo{
 			"nodo1": {
@@ -479,14 +527,15 @@ func TestBuscarNodoYSerie_MultiplesNodos(t *testing.T) {
 		},
 	}
 
-	// Buscar serie en nodo2
-	nodo, serie, err := m.buscarNodoYSerie("/sensores/humedad")
+	// Buscar serie exacta en nodo2
+	resultados, err := m.buscarSeriesPorPath("/sensores/humedad")
 
 	assert.NoError(t, err)
-	assert.Equal(t, "nodo2", nodo.NodoID)
-	assert.Equal(t, 2, serie.SerieId)
+	assert.Len(t, resultados, 1)
+	assert.Equal(t, "nodo2", resultados[0].nodo.NodoID)
+	assert.Equal(t, 2, resultados[0].serie.SerieId)
 
-	t.Log("buscarNodoYSerie encuentra serie en multiples nodos")
+	t.Log("buscarSeriesPorPath encuentra serie en multiples nodos")
 }
 
 // ============================================================================
@@ -2656,8 +2705,8 @@ func TestEsPatronWildcard(t *testing.T) {
 	t.Log("tipos.EsPatronWildcard detecta correctamente patrones con wildcard")
 }
 
-// TestBuscarSeriesPorPatron_Encontradas verifica busqueda con coincidencias
-func TestBuscarSeriesPorPatron_Encontradas(t *testing.T) {
+// TestBuscarSeriesPorPath_Wildcard_Encontradas verifica busqueda con coincidencias
+func TestBuscarSeriesPorPath_Wildcard_Encontradas(t *testing.T) {
 	m := &ManagerDespachador{
 		nodos: map[string]*tipos.Nodo{
 			"nodo1": {
@@ -2674,7 +2723,7 @@ func TestBuscarSeriesPorPatron_Encontradas(t *testing.T) {
 	}
 
 	// Buscar todas las series de temperatura
-	resultados, err := m.buscarSeriesPorPatron("*/temp")
+	resultados, err := m.buscarSeriesPorPath("*/temp")
 
 	assert.NoError(t, err)
 	assert.Len(t, resultados, 2)
@@ -2687,11 +2736,11 @@ func TestBuscarSeriesPorPatron_Encontradas(t *testing.T) {
 	assert.Contains(t, paths, "sensor_01/temp")
 	assert.Contains(t, paths, "sensor_02/temp")
 
-	t.Log("buscarSeriesPorPatron encuentra series que coinciden con el patron")
+	t.Log("buscarSeriesPorPath con wildcard encuentra series que coinciden con el patron")
 }
 
-// TestBuscarSeriesPorPatron_NoEncontradas verifica error cuando no hay coincidencias
-func TestBuscarSeriesPorPatron_NoEncontradas(t *testing.T) {
+// TestBuscarSeriesPorPath_Wildcard_NoEncontradas verifica error cuando no hay coincidencias
+func TestBuscarSeriesPorPath_Wildcard_NoEncontradas(t *testing.T) {
 	m := &ManagerDespachador{
 		nodos: map[string]*tipos.Nodo{
 			"nodo1": {
@@ -2703,15 +2752,15 @@ func TestBuscarSeriesPorPatron_NoEncontradas(t *testing.T) {
 		},
 	}
 
-	_, err := m.buscarSeriesPorPatron("*/pressure")
+	_, err := m.buscarSeriesPorPath("*/pressure")
 
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no se encontraron series")
-	t.Log("buscarSeriesPorPatron retorna error cuando no hay coincidencias")
+	assert.Contains(t, err.Error(), "no encontrada")
+	t.Log("buscarSeriesPorPath con wildcard retorna error cuando no hay coincidencias")
 }
 
-// TestBuscarSeriesPorPatron_MultiplesNodos verifica busqueda en multiples nodos
-func TestBuscarSeriesPorPatron_MultiplesNodos(t *testing.T) {
+// TestBuscarSeriesPorPath_Wildcard_MultiplesNodos verifica busqueda en multiples nodos
+func TestBuscarSeriesPorPath_Wildcard_MultiplesNodos(t *testing.T) {
 	m := &ManagerDespachador{
 		nodos: map[string]*tipos.Nodo{
 			"nodo1": {
@@ -2733,7 +2782,7 @@ func TestBuscarSeriesPorPatron_MultiplesNodos(t *testing.T) {
 		},
 	}
 
-	resultados, err := m.buscarSeriesPorPatron("*/temp")
+	resultados, err := m.buscarSeriesPorPath("*/temp")
 
 	assert.NoError(t, err)
 	assert.Len(t, resultados, 2)
@@ -2746,7 +2795,7 @@ func TestBuscarSeriesPorPatron_MultiplesNodos(t *testing.T) {
 	assert.True(t, nodos["nodo1"])
 	assert.True(t, nodos["nodo2"])
 
-	t.Log("buscarSeriesPorPatron busca en multiples nodos")
+	t.Log("buscarSeriesPorPath con wildcard busca en multiples nodos")
 }
 
 // TestConsultarAgregacion_Wildcard_MultiplesSeries verifica agregacion con wildcard
@@ -2815,7 +2864,7 @@ func TestConsultarAgregacion_Wildcard_SinCoincidencias(t *testing.T) {
 	_, err := m.ConsultarAgregacion("*/pressure", inicio, fin, tipos.AgregacionPromedio)
 
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no se encontraron series")
+	assert.Contains(t, err.Error(), "no encontrada")
 	t.Log("ConsultarAgregacion con wildcard retorna error cuando no hay coincidencias")
 }
 
@@ -2975,7 +3024,7 @@ func TestConsultarAgregacionTemporal_Wildcard_SinCoincidencias(t *testing.T) {
 	_, err := m.ConsultarAgregacionTemporal("*/pressure", inicio, fin, tipos.AgregacionPromedio, time.Second)
 
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "no se encontraron series")
+	assert.Contains(t, err.Error(), "no encontrada")
 	t.Log("ConsultarAgregacionTemporal con wildcard retorna error sin coincidencias")
 }
 

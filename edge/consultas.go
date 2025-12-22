@@ -13,17 +13,36 @@ import (
 	"github.com/cockroachdb/pebble"
 )
 
-// ConsultarRango consulta mediciones de una serie dentro de un rango de tiempo
-// y descomprime los datos antes de retornarlos
-func (me *ManagerEdge) ConsultarRango(nombreSerie string, tiempoInicio, tiempoFin time.Time) ([]tipos.Medicion, error) {
+// ConsultarRango consulta mediciones de una o más series dentro de un rango de tiempo
+// y descomprime los datos antes de retornarlos.
+// El parámetro path puede ser:
+//   - Path exacto: "sensor_01/temperatura"
+//   - Patrón con wildcard: "sensor_*/temperatura" o "*/temperatura"
+func (me *ManagerEdge) ConsultarRango(path string, tiempoInicio, tiempoFin time.Time) ([]tipos.Medicion, error) {
+	// Resolver series (path exacto o patrón wildcard)
+	series, err := me.resolverSeries(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Recolectar y combinar resultados de todas las series
+	var todasMediciones []tipos.Medicion
+	for _, serie := range series {
+		mediciones, err := me.consultarRangoSerie(serie, tiempoInicio, tiempoFin)
+		if err != nil {
+			continue // Ignorar series sin datos
+		}
+		todasMediciones = append(todasMediciones, mediciones...)
+	}
+
+	return todasMediciones, nil
+}
+
+// consultarRangoSerie consulta mediciones de una serie específica dentro de un rango de tiempo
+func (me *ManagerEdge) consultarRangoSerie(serie tipos.Serie, tiempoInicio, tiempoFin time.Time) ([]tipos.Medicion, error) {
 	// Convertir los tiempos a Unix timestamp (en nanosegundos)
 	tiempoInicioUnix := tiempoInicio.UnixNano()
 	tiempoFinUnix := tiempoFin.UnixNano()
-	// Obtener configuración de la serie desde cache
-	serie, err := me.ObtenerSeries(nombreSerie)
-	if err != nil {
-		return nil, fmt.Errorf("serie no encontrada: %s", nombreSerie)
-	}
 
 	var resultados []tipos.Medicion
 
@@ -74,7 +93,7 @@ func (me *ManagerEdge) ConsultarRango(nombreSerie string, tiempoInicio, tiempoFi
 	}
 
 	// Obtener datos del buffer en memoria si existe
-	if bufferInterface, ok := me.buffers.Load(nombreSerie); ok {
+	if bufferInterface, ok := me.buffers.Load(serie.Path); ok {
 		buffer := bufferInterface.(*SerieBuffer)
 		buffer.mu.Lock()
 
@@ -92,10 +111,45 @@ func (me *ManagerEdge) ConsultarRango(nombreSerie string, tiempoInicio, tiempoFi
 	return resultados, nil
 }
 
-// ConsultarUltimoPunto obtiene la última medición registrada para una serie
-func (me *ManagerEdge) ConsultarUltimoPunto(nombreSerie string) (tipos.Medicion, error) {
+// ConsultarUltimoPunto obtiene la última medición registrada para una o más series.
+// El parámetro path puede ser:
+//   - Path exacto: "sensor_01/temperatura"
+//   - Patrón con wildcard: "sensor_*/temperatura" o "*/temperatura"
+//
+// Si se usa wildcard, retorna la medición más reciente entre todas las series que coincidan.
+func (me *ManagerEdge) ConsultarUltimoPunto(path string) (tipos.Medicion, error) {
+	// Resolver series (path exacto o patrón wildcard)
+	series, err := me.resolverSeries(path)
+	if err != nil {
+		return tipos.Medicion{}, err
+	}
+
+	// Encontrar la medición más reciente entre todas las series
+	var ultimaMedicion tipos.Medicion
+	encontrado := false
+
+	for _, serie := range series {
+		medicion, err := me.consultarUltimoPuntoSerie(serie)
+		if err != nil {
+			continue // Ignorar series sin datos
+		}
+		if !encontrado || medicion.Tiempo > ultimaMedicion.Tiempo {
+			ultimaMedicion = medicion
+			encontrado = true
+		}
+	}
+
+	if !encontrado {
+		return tipos.Medicion{}, fmt.Errorf("no hay mediciones para el patrón: %s", path)
+	}
+
+	return ultimaMedicion, nil
+}
+
+// consultarUltimoPuntoSerie obtiene la última medición de una serie específica
+func (me *ManagerEdge) consultarUltimoPuntoSerie(serie tipos.Serie) (tipos.Medicion, error) {
 	// Primero revisar el buffer en memoria
-	if bufferInterface, ok := me.buffers.Load(nombreSerie); ok {
+	if bufferInterface, ok := me.buffers.Load(serie.Path); ok {
 		buffer := bufferInterface.(*SerieBuffer)
 		buffer.mu.Lock()
 		defer buffer.mu.Unlock()
@@ -110,12 +164,6 @@ func (me *ManagerEdge) ConsultarUltimoPunto(nombreSerie string) (tipos.Medicion,
 			}
 			return ultimaMedicion, nil
 		}
-	}
-
-	// Si no hay datos en buffer, consultar la base de datos
-	serie, err := me.ObtenerSeries(nombreSerie)
-	if err != nil {
-		return tipos.Medicion{}, fmt.Errorf("serie no encontrada: %s", nombreSerie)
 	}
 
 	// Buscar el último bloque para esta serie
@@ -134,7 +182,7 @@ func (me *ManagerEdge) ConsultarUltimoPunto(nombreSerie string) (tipos.Medicion,
 
 	// Ir al último elemento
 	if !iter.Last() {
-		return tipos.Medicion{}, fmt.Errorf("no hay mediciones para la serie: %s", nombreSerie)
+		return tipos.Medicion{}, fmt.Errorf("no hay mediciones para la serie: %s", serie.Path)
 	}
 
 	datosComprimidos := make([]byte, len(iter.Value()))
@@ -146,7 +194,7 @@ func (me *ManagerEdge) ConsultarUltimoPunto(nombreSerie string) (tipos.Medicion,
 	}
 
 	if len(mediciones) == 0 {
-		return tipos.Medicion{}, fmt.Errorf("bloque vacío para serie: %s", nombreSerie)
+		return tipos.Medicion{}, fmt.Errorf("bloque vacío para serie: %s", serie.Path)
 	}
 
 	// Encontrar la medición más reciente en el bloque

@@ -425,32 +425,6 @@ func (m *ManagerDespachador) cargarNodosDesdeS3() error {
 	return nil
 }
 
-// buscarNodoYSerie busca el nodo y la configuración de serie para un path dado
-// Si conSerie es true, retorna también la serie encontrada
-// Soporta búsqueda exacta y por prefijo parcial
-func (m *ManagerDespachador) buscarNodoYSerie(nombreSerie string) (tipos.Nodo, tipos.Serie, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	// Primero intentar búsqueda directa por path exacto
-	for _, nodo := range m.nodos {
-		if serie, existe := nodo.Series[nombreSerie]; existe {
-			return *nodo, serie, nil
-		}
-	}
-
-	// Si no se encuentra, buscar por prefijo parcial
-	for _, nodo := range m.nodos {
-		for serieNombre, serie := range nodo.Series {
-			if strings.HasPrefix(nombreSerie, serieNombre) || strings.HasPrefix(serieNombre, nombreSerie) {
-				return *nodo, serie, nil
-			}
-		}
-	}
-
-	return tipos.Nodo{}, tipos.Serie{}, fmt.Errorf("serie '%s' no encontrada en ningún nodo activo", nombreSerie)
-}
-
 // ============================================================================
 // CONSULTAS (S3 + Edge)
 // ============================================================================
@@ -673,11 +647,12 @@ func (m *ManagerDespachador) combinarResultados(datosS3, datosEdge []tipos.Medic
 	return resultado
 }
 
-// ConsultarRango consulta datos combinando S3 (histórico) y edge (reciente)
-// Esta función funciona incluso si el edge está offline (corte de luz/internet)
+// ConsultarRango consulta datos combinando S3 (histórico) y edge (reciente).
+// Esta función funciona incluso si el edge está offline (corte de luz/internet).
+// Soporta wildcards en el path de la serie (ej: */temp, sensor_01/*).
 func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, tiempoFin time.Time) ([]tipos.Medicion, error) {
-	// Buscar nodo y serie
-	nodo, serie, err := m.buscarNodoYSerie(nombreSerie)
+	// Buscar todas las series que coincidan (path exacto o wildcard)
+	seriesEncontradas, err := m.buscarSeriesPorPath(nombreSerie)
 	if err != nil {
 		return nil, err
 	}
@@ -685,84 +660,134 @@ func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, ti
 	inicio := tiempoInicio.UnixNano()
 	fin := tiempoFin.UnixNano()
 
-	// Canal para resultados
-	type resultado struct {
+	// Canal para recoger resultados de todas las consultas
+	type resultadoSerie struct {
 		mediciones []tipos.Medicion
-		err        error
-		fuente     string
+		errS3      error
+		errEdge    error
+		path       string
 	}
-	resultados := make(chan resultado, 2)
+	resultados := make(chan resultadoSerie, len(seriesEncontradas))
 
-	// Consultar S3 en paralelo (siempre disponible)
-	go func() {
-		mediciones, err := m.consultarDatosS3(nodo, serie, inicio, fin)
-		resultados <- resultado{mediciones: mediciones, err: err, fuente: "S3"}
-	}()
+	// Consultar cada serie en paralelo (S3 + edge)
+	for _, sn := range seriesEncontradas {
+		go func(sn serieConNodo) {
+			var datosS3, datosEdge []tipos.Medicion
+			var errS3, errEdge error
 
-	// Consultar edge con timeout de 5 segundos
-	go func() {
-		mediciones, err := m.consultarEdgeConTimeout(nodo, nombreSerie, inicio, fin, 5*time.Second)
-		resultados <- resultado{mediciones: mediciones, err: err, fuente: "Edge"}
-	}()
+			// Consultar S3
+			datosS3, errS3 = m.consultarDatosS3(sn.nodo, sn.serie, inicio, fin)
 
-	// Recoger resultados
-	var datosS3, datosEdge []tipos.Medicion
-	var errS3, errEdge error
+			// Consultar edge
+			datosEdge, errEdge = m.consultarEdgeConTimeout(sn.nodo, sn.path, inicio, fin, 5*time.Second)
 
-	for i := 0; i < 2; i++ {
+			resultados <- resultadoSerie{
+				mediciones: m.combinarResultados(datosS3, datosEdge),
+				errS3:      errS3,
+				errEdge:    errEdge,
+				path:       sn.path,
+			}
+		}(sn)
+	}
+
+	// Recoger todos los resultados y combinar mediciones
+	var todasMediciones []tipos.Medicion
+	var erroresS3 []string
+
+	for i := 0; i < len(seriesEncontradas); i++ {
 		res := <-resultados
-		switch res.fuente {
-		case "S3":
-			datosS3 = res.mediciones
-			errS3 = res.err
-		case "Edge":
-			datosEdge = res.mediciones
-			errEdge = res.err
+
+		// Registrar errores de S3 (críticos)
+		if res.errS3 != nil {
+			erroresS3 = append(erroresS3, fmt.Sprintf("%s: %v", res.path, res.errS3))
 		}
+
+		// Los errores de edge solo se loguean (el edge puede estar offline)
+		if res.errEdge != nil {
+			log.Printf("Advertencia: error consultando edge para serie %s: %v", res.path, res.errEdge)
+		}
+
+		// Agregar mediciones al conjunto total
+		todasMediciones = append(todasMediciones, res.mediciones...)
 	}
 
-	// Si S3 falla, es un error crítico (es nuestra fuente principal de históricos)
-	if errS3 != nil {
-		return nil, fmt.Errorf("error consultando S3: %v", errS3)
+	// Si hubo errores de S3 en todas las series, reportar
+	if len(erroresS3) == len(seriesEncontradas) {
+		return nil, fmt.Errorf("error consultando S3: %v", erroresS3)
 	}
 
-	// Si el edge falla, solo logueamos (puede estar offline)
-	if errEdge != nil {
-		log.Printf("Advertencia: error consultando edge %s: %v (continuando con datos de S3)", nodo.NodoID, errEdge)
-	}
-
-	// Combinar resultados
-	return m.combinarResultados(datosS3, datosEdge), nil
+	return todasMediciones, nil
 }
 
-// ConsultarUltimoPunto busca el último punto combinando S3 y edge
+// ConsultarUltimoPunto busca el último punto combinando S3 y edge.
+// Soporta wildcards en el path de la serie (ej: */temp, sensor_01/*).
+// Si se usa wildcard, retorna la medición más reciente entre todas las series que coincidan.
 func (m *ManagerDespachador) ConsultarUltimoPunto(nombreSerie string) (tipos.Medicion, error) {
-	// Buscar nodo y serie
-	nodo, serie, err := m.buscarNodoYSerie(nombreSerie)
+	// Buscar todas las series que coincidan (path exacto o wildcard)
+	seriesEncontradas, err := m.buscarSeriesPorPath(nombreSerie)
 	if err != nil {
 		return tipos.Medicion{}, err
 	}
 
-	// Primero intentar con el edge (tiene datos más recientes)
-	medicion, encontrado, err := m.consultarPuntoEdge(nodo, nombreSerie, "ultimo", 5*time.Second)
-	if err == nil && encontrado {
-		return medicion, nil
+	// Canal para recoger resultados de todas las consultas
+	type resultadoSerie struct {
+		medicion   tipos.Medicion
+		encontrado bool
+		path       string
+	}
+	resultados := make(chan resultadoSerie, len(seriesEncontradas))
+
+	// Consultar cada serie en paralelo
+	for _, sn := range seriesEncontradas {
+		go func(sn serieConNodo) {
+			var medicion tipos.Medicion
+			encontrado := false
+
+			// Primero intentar con el edge (tiene datos más recientes)
+			med, enc, err := m.consultarPuntoEdge(sn.nodo, sn.path, "ultimo", 5*time.Second)
+			if err == nil && enc {
+				medicion = med
+				encontrado = true
+			} else {
+				// Si el edge no responde, buscar en S3 el bloque más reciente
+				bloques, err := m.listarBloquesEnRango(sn.nodo.NodoID, sn.serie.SerieId, 0, time.Now().UnixNano())
+				if err == nil && len(bloques) > 0 {
+					ultimoBloque := bloques[len(bloques)-1]
+					mediciones, err := m.descargarYDescomprimirBloque(ultimoBloque, sn.serie)
+					if err == nil && len(mediciones) > 0 {
+						medicion = mediciones[len(mediciones)-1]
+						encontrado = true
+					}
+				}
+			}
+
+			resultados <- resultadoSerie{
+				medicion:   medicion,
+				encontrado: encontrado,
+				path:       sn.path,
+			}
+		}(sn)
 	}
 
-	// Si el edge no responde, buscar en S3 el bloque más reciente
-	bloques, err := m.listarBloquesEnRango(nodo.NodoID, serie.SerieId, 0, time.Now().UnixNano())
-	if err != nil || len(bloques) == 0 {
+	// Recoger todos los resultados y encontrar la medición más reciente
+	var ultimaMedicion tipos.Medicion
+	hayResultados := false
+
+	for i := 0; i < len(seriesEncontradas); i++ {
+		res := <-resultados
+		if res.encontrado {
+			if !hayResultados || res.medicion.Tiempo > ultimaMedicion.Tiempo {
+				ultimaMedicion = res.medicion
+				hayResultados = true
+			}
+		}
+	}
+
+	if !hayResultados {
 		return tipos.Medicion{}, fmt.Errorf("no se encontraron datos para la serie %s", nombreSerie)
 	}
 
-	// Tomar el último bloque
-	ultimoBloque := bloques[len(bloques)-1]
-	mediciones, err := m.descargarYDescomprimirBloque(ultimoBloque, serie)
-	if err != nil || len(mediciones) == 0 {
-		return tipos.Medicion{}, fmt.Errorf("error obteniendo último bloque: %v", err)
-	}
-
-	return mediciones[len(mediciones)-1], nil
+	return ultimaMedicion, nil
 }
 
 // ============================================================================
@@ -833,7 +858,7 @@ func convertirMedicionesAFloat64(mediciones []tipos.Medicion) []float64 {
 }
 
 // ============================================================================
-// HELPERS PARA WILDCARDS
+// HELPERS PARA BÚSQUEDA DE SERIES
 // ============================================================================
 
 // serieConNodo asocia una serie con su nodo para consultas paralelas
@@ -843,27 +868,45 @@ type serieConNodo struct {
 	path  string // Path original de la serie
 }
 
-// buscarSeriesPorPatron busca todas las series que coincidan con el patrón en todos los nodos
-func (m *ManagerDespachador) buscarSeriesPorPatron(patron string) ([]serieConNodo, error) {
+// buscarSeriesPorPath busca series que coincidan con el path dado.
+// Funciona tanto para paths exactos como para patrones con wildcards.
+// Si es un path exacto, retorna la única serie que coincide.
+// Si es un patrón wildcard, retorna todas las series que coincidan.
+func (m *ManagerDespachador) buscarSeriesPorPath(path string) ([]serieConNodo, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	var resultados []serieConNodo
 
-	for _, nodo := range m.nodos {
-		for path, serie := range nodo.Series {
-			if tipos.MatchPath(path, patron) {
+	// Si es wildcard, buscar por patrón
+	if tipos.EsPatronWildcard(path) {
+		for _, nodo := range m.nodos {
+			for seriePath, serie := range nodo.Series {
+				if tipos.MatchPath(seriePath, path) {
+					resultados = append(resultados, serieConNodo{
+						nodo:  *nodo,
+						serie: serie,
+						path:  seriePath,
+					})
+				}
+			}
+		}
+	} else {
+		// Path exacto: buscar directamente
+		for _, nodo := range m.nodos {
+			if serie, existe := nodo.Series[path]; existe {
 				resultados = append(resultados, serieConNodo{
 					nodo:  *nodo,
 					serie: serie,
 					path:  path,
 				})
+				break // Solo puede estar en un nodo
 			}
 		}
 	}
 
 	if len(resultados) == 0 {
-		return nil, fmt.Errorf("no se encontraron series para el patrón: %s", patron)
+		return nil, fmt.Errorf("serie '%s' no encontrada", path)
 	}
 
 	return resultados, nil
@@ -877,92 +920,8 @@ func (m *ManagerDespachador) ConsultarAgregacion(
 	tiempoInicio, tiempoFin time.Time,
 	agregacion tipos.TipoAgregacion,
 ) (float64, error) {
-	// Si es un patrón wildcard, usar flujo especial
-	if tipos.EsPatronWildcard(nombreSerie) {
-		return m.consultarAgregacionWildcard(nombreSerie, tiempoInicio, tiempoFin, agregacion)
-	}
-
-	// Buscar nodo y serie
-	nodo, serie, err := m.buscarNodoYSerie(nombreSerie)
-	if err != nil {
-		return 0, err
-	}
-
-	inicio := tiempoInicio.UnixNano()
-	fin := tiempoFin.UnixNano()
-
-	// Canal para resultados
-	type resultado struct {
-		mediciones []tipos.Medicion
-		err        error
-		fuente     string
-	}
-	resultados := make(chan resultado, 2)
-
-	// Consultar S3 en paralelo (siempre disponible)
-	go func() {
-		mediciones, err := m.consultarDatosS3(nodo, serie, inicio, fin)
-		resultados <- resultado{mediciones: mediciones, err: err, fuente: "S3"}
-	}()
-
-	// Consultar edge con timeout de 5 segundos
-	go func() {
-		mediciones, err := m.consultarEdgeConTimeout(nodo, nombreSerie, inicio, fin, 5*time.Second)
-		resultados <- resultado{mediciones: mediciones, err: err, fuente: "Edge"}
-	}()
-
-	// Recoger resultados
-	var datosS3, datosEdge []tipos.Medicion
-	var errS3, errEdge error
-
-	for i := 0; i < 2; i++ {
-		res := <-resultados
-		switch res.fuente {
-		case "S3":
-			datosS3 = res.mediciones
-			errS3 = res.err
-		case "Edge":
-			datosEdge = res.mediciones
-			errEdge = res.err
-		}
-	}
-
-	// Si S3 falla, es un error crítico
-	if errS3 != nil {
-		return 0, fmt.Errorf("error consultando S3: %v", errS3)
-	}
-
-	// Si el edge falla, solo logueamos
-	if errEdge != nil {
-		log.Printf("Advertencia: error consultando edge %s: %v (continuando con datos de S3)", nodo.NodoID, errEdge)
-	}
-
-	// Combinar resultados
-	datosCombinados := m.combinarResultados(datosS3, datosEdge)
-
-	if len(datosCombinados) == 0 {
-		return 0, fmt.Errorf("no se encontraron datos para la serie %s en el rango especificado", nombreSerie)
-	}
-
-	// Convertir a float64 y calcular agregación
-	valores := convertirMedicionesAFloat64(datosCombinados)
-	if len(valores) == 0 {
-		return 0, fmt.Errorf("no hay valores numéricos para agregar en la serie %s", nombreSerie)
-	}
-
-	return calcularAgregacionSimple(valores, agregacion)
-}
-
-// consultarAgregacionWildcard implementa la lógica de agregación para patrones wildcard.
-// Busca todas las series que coincidan con el patrón, consulta cada una en paralelo,
-// y combina todos los valores para calcular la agregación.
-func (m *ManagerDespachador) consultarAgregacionWildcard(
-	patron string,
-	tiempoInicio, tiempoFin time.Time,
-	agregacion tipos.TipoAgregacion,
-) (float64, error) {
-	// Buscar todas las series que coincidan con el patrón
-	seriesEncontradas, err := m.buscarSeriesPorPatron(patron)
+	// Buscar todas las series que coincidan (path exacto o wildcard)
+	seriesEncontradas, err := m.buscarSeriesPorPath(nombreSerie)
 	if err != nil {
 		return 0, err
 	}
@@ -1024,11 +983,11 @@ func (m *ManagerDespachador) consultarAgregacionWildcard(
 
 	// Si hubo errores de S3 en todas las series, reportar
 	if len(erroresS3) == len(seriesEncontradas) {
-		return 0, fmt.Errorf("error consultando S3 para todas las series: %v", erroresS3)
+		return 0, fmt.Errorf("error consultando S3: %v", erroresS3)
 	}
 
 	if len(todosValores) == 0 {
-		return 0, fmt.Errorf("no se encontraron datos para el patrón %s en el rango especificado", patron)
+		return 0, fmt.Errorf("no se encontraron datos para la serie %s en el rango especificado", nombreSerie)
 	}
 
 	return calcularAgregacionSimple(todosValores, agregacion)
@@ -1047,86 +1006,8 @@ func (m *ManagerDespachador) ConsultarAgregacionTemporal(
 		return nil, fmt.Errorf("intervalo debe ser mayor a cero")
 	}
 
-	// Si es un patrón wildcard, usar flujo especial
-	if tipos.EsPatronWildcard(nombreSerie) {
-		return m.consultarAgregacionTemporalWildcard(nombreSerie, tiempoInicio, tiempoFin, agregacion, intervalo)
-	}
-
-	// Buscar nodo y serie
-	nodo, serie, err := m.buscarNodoYSerie(nombreSerie)
-	if err != nil {
-		return nil, err
-	}
-
-	inicio := tiempoInicio.UnixNano()
-	fin := tiempoFin.UnixNano()
-
-	// Canal para resultados
-	type resultado struct {
-		mediciones []tipos.Medicion
-		err        error
-		fuente     string
-	}
-	resultados := make(chan resultado, 2)
-
-	// Consultar S3 en paralelo
-	go func() {
-		mediciones, err := m.consultarDatosS3(nodo, serie, inicio, fin)
-		resultados <- resultado{mediciones: mediciones, err: err, fuente: "S3"}
-	}()
-
-	// Consultar edge con timeout
-	go func() {
-		mediciones, err := m.consultarEdgeConTimeout(nodo, nombreSerie, inicio, fin, 5*time.Second)
-		resultados <- resultado{mediciones: mediciones, err: err, fuente: "Edge"}
-	}()
-
-	// Recoger resultados
-	var datosS3, datosEdge []tipos.Medicion
-	var errS3, errEdge error
-
-	for i := 0; i < 2; i++ {
-		res := <-resultados
-		switch res.fuente {
-		case "S3":
-			datosS3 = res.mediciones
-			errS3 = res.err
-		case "Edge":
-			datosEdge = res.mediciones
-			errEdge = res.err
-		}
-	}
-
-	if errS3 != nil {
-		return nil, fmt.Errorf("error consultando S3: %v", errS3)
-	}
-
-	if errEdge != nil {
-		log.Printf("Advertencia: error consultando edge %s: %v (continuando con datos de S3)", nodo.NodoID, errEdge)
-	}
-
-	// Combinar resultados
-	datosCombinados := m.combinarResultados(datosS3, datosEdge)
-
-	if len(datosCombinados) == 0 {
-		return nil, fmt.Errorf("no se encontraron datos para la serie %s en el rango especificado", nombreSerie)
-	}
-
-	// Usar función helper para agrupar y calcular
-	return m.agruparYCalcularAgregacion(datosCombinados, tiempoInicio, agregacion, intervalo, nombreSerie)
-}
-
-// consultarAgregacionTemporalWildcard implementa la lógica de agregación temporal para patrones wildcard.
-// Busca todas las series que coincidan con el patrón, consulta cada una en paralelo,
-// y agrupa todos los valores por buckets temporales para calcular la agregación.
-func (m *ManagerDespachador) consultarAgregacionTemporalWildcard(
-	patron string,
-	tiempoInicio, tiempoFin time.Time,
-	agregacion tipos.TipoAgregacion,
-	intervalo time.Duration,
-) ([]tipos.ResultadoAgregacionTemporal, error) {
-	// Buscar todas las series que coincidan con el patrón
-	seriesEncontradas, err := m.buscarSeriesPorPatron(patron)
+	// Buscar todas las series que coincidan (path exacto o wildcard)
+	seriesEncontradas, err := m.buscarSeriesPorPath(nombreSerie)
 	if err != nil {
 		return nil, err
 	}
@@ -1187,15 +1068,15 @@ func (m *ManagerDespachador) consultarAgregacionTemporalWildcard(
 
 	// Si hubo errores de S3 en todas las series, reportar
 	if len(erroresS3) == len(seriesEncontradas) {
-		return nil, fmt.Errorf("error consultando S3 para todas las series: %v", erroresS3)
+		return nil, fmt.Errorf("error consultando S3: %v", erroresS3)
 	}
 
 	if len(todasMediciones) == 0 {
-		return nil, fmt.Errorf("no se encontraron datos para el patrón %s en el rango especificado", patron)
+		return nil, fmt.Errorf("no se encontraron datos para la serie %s en el rango especificado", nombreSerie)
 	}
 
 	// Usar función helper para agrupar y calcular
-	return m.agruparYCalcularAgregacion(todasMediciones, tiempoInicio, agregacion, intervalo, patron)
+	return m.agruparYCalcularAgregacion(todasMediciones, tiempoInicio, agregacion, intervalo, nombreSerie)
 }
 
 // agruparYCalcularAgregacion agrupa mediciones por buckets temporales y calcula la agregación.

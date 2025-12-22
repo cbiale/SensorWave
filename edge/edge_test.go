@@ -190,31 +190,31 @@ func TestMatchTags(t *testing.T) {
 
 // TestMatchPath_Exacto verifica coincidencia exacta
 func TestMatchPath_Exacto(t *testing.T) {
-	assert.True(t, matchPath("sensor/temperatura", "sensor/temperatura"))
-	assert.False(t, matchPath("sensor/temperatura", "sensor/humedad"))
+	assert.True(t, tipos.MatchPath("sensor/temperatura", "sensor/temperatura"))
+	assert.False(t, tipos.MatchPath("sensor/temperatura", "sensor/humedad"))
 	t.Log("✓ matchPath funciona con coincidencia exacta")
 }
 
 // TestMatchPath_Wildcard verifica wildcards
 func TestMatchPath_Wildcard(t *testing.T) {
 	// Wildcard total
-	assert.True(t, matchPath("cualquier/cosa", "*"))
+	assert.True(t, tipos.MatchPath("cualquier/cosa", "*"))
 
 	// Wildcard parcial
-	assert.True(t, matchPath("dispositivo_001/temperatura", "dispositivo_001/*"))
-	assert.True(t, matchPath("dispositivo_001/temperatura", "*/temperatura"))
+	assert.True(t, tipos.MatchPath("dispositivo_001/temperatura", "dispositivo_001/*"))
+	assert.True(t, tipos.MatchPath("dispositivo_001/temperatura", "*/temperatura"))
 
 	// No coincide
-	assert.False(t, matchPath("dispositivo_001/temperatura", "dispositivo_002/*"))
-	assert.False(t, matchPath("dispositivo_001/temperatura/extra", "dispositivo_001/*"))
+	assert.False(t, tipos.MatchPath("dispositivo_001/temperatura", "dispositivo_002/*"))
+	assert.False(t, tipos.MatchPath("dispositivo_001/temperatura/extra", "dispositivo_001/*"))
 
 	t.Log("✓ matchPath funciona con wildcards")
 }
 
 // TestMatchPath_LongitudDiferente verifica paths con diferente longitud
 func TestMatchPath_LongitudDiferente(t *testing.T) {
-	assert.False(t, matchPath("a/b/c", "a/b"))
-	assert.False(t, matchPath("a/b", "a/b/c"))
+	assert.False(t, tipos.MatchPath("a/b/c", "a/b"))
+	assert.False(t, tipos.MatchPath("a/b", "a/b/c"))
 	t.Log("✓ matchPath maneja longitudes diferentes")
 }
 
@@ -225,60 +225,60 @@ func TestMatchPath_LongitudDiferente(t *testing.T) {
 // TestCalcularAgregacionSimple_Promedio verifica cálculo de promedio
 func TestCalcularAgregacionSimple_Promedio(t *testing.T) {
 	valores := []float64{10, 20, 30, 40, 50}
-	resultado, err := calcularAgregacionSimple(valores, AgregacionPromedio)
+	resultado, err := CalcularAgregacionSimple(valores, AgregacionPromedio)
 	require.NoError(t, err)
 	assert.Equal(t, 30.0, resultado)
-	t.Log("✓ calcularAgregacionSimple calcula promedio correctamente")
+	t.Log("✓ CalcularAgregacionSimple calcula promedio correctamente")
 }
 
 // TestCalcularAgregacionSimple_Maximo verifica cálculo de máximo
 func TestCalcularAgregacionSimple_Maximo(t *testing.T) {
 	valores := []float64{10, 50, 30, 20, 40}
-	resultado, err := calcularAgregacionSimple(valores, AgregacionMaximo)
+	resultado, err := CalcularAgregacionSimple(valores, AgregacionMaximo)
 	require.NoError(t, err)
 	assert.Equal(t, 50.0, resultado)
-	t.Log("✓ calcularAgregacionSimple calcula máximo correctamente")
+	t.Log("✓ CalcularAgregacionSimple calcula máximo correctamente")
 }
 
 // TestCalcularAgregacionSimple_Minimo verifica cálculo de mínimo
 func TestCalcularAgregacionSimple_Minimo(t *testing.T) {
 	valores := []float64{10, 50, 30, 5, 40}
-	resultado, err := calcularAgregacionSimple(valores, AgregacionMinimo)
+	resultado, err := CalcularAgregacionSimple(valores, AgregacionMinimo)
 	require.NoError(t, err)
 	assert.Equal(t, 5.0, resultado)
-	t.Log("✓ calcularAgregacionSimple calcula mínimo correctamente")
+	t.Log("✓ CalcularAgregacionSimple calcula mínimo correctamente")
 }
 
 // TestCalcularAgregacionSimple_Suma verifica cálculo de suma
 func TestCalcularAgregacionSimple_Suma(t *testing.T) {
 	valores := []float64{10, 20, 30}
-	resultado, err := calcularAgregacionSimple(valores, AgregacionSuma)
+	resultado, err := CalcularAgregacionSimple(valores, AgregacionSuma)
 	require.NoError(t, err)
 	assert.Equal(t, 60.0, resultado)
-	t.Log("✓ calcularAgregacionSimple calcula suma correctamente")
+	t.Log("✓ CalcularAgregacionSimple calcula suma correctamente")
 }
 
 // TestCalcularAgregacionSimple_Count verifica conteo
 func TestCalcularAgregacionSimple_Count(t *testing.T) {
 	valores := []float64{10, 20, 30, 40, 50}
-	resultado, err := calcularAgregacionSimple(valores, AgregacionCount)
+	resultado, err := CalcularAgregacionSimple(valores, AgregacionCount)
 	require.NoError(t, err)
 	assert.Equal(t, 5.0, resultado)
-	t.Log("✓ calcularAgregacionSimple cuenta elementos correctamente")
+	t.Log("✓ CalcularAgregacionSimple cuenta elementos correctamente")
 }
 
 // TestCalcularAgregacionSimple_Vacio verifica error con slice vacío
 func TestCalcularAgregacionSimple_Vacio(t *testing.T) {
-	_, err := calcularAgregacionSimple([]float64{}, AgregacionPromedio)
+	_, err := CalcularAgregacionSimple([]float64{}, AgregacionPromedio)
 	assert.Error(t, err)
-	t.Log("✓ calcularAgregacionSimple retorna error con slice vacío")
+	t.Log("✓ CalcularAgregacionSimple retorna error con slice vacío")
 }
 
 // TestCalcularAgregacionSimple_NoSoportada verifica error con agregación inválida
 func TestCalcularAgregacionSimple_NoSoportada(t *testing.T) {
-	_, err := calcularAgregacionSimple([]float64{1, 2, 3}, "invalida")
+	_, err := CalcularAgregacionSimple([]float64{1, 2, 3}, "invalida")
 	assert.Error(t, err)
-	t.Log("✓ calcularAgregacionSimple retorna error con agregación no soportada")
+	t.Log("✓ CalcularAgregacionSimple retorna error con agregación no soportada")
 }
 
 // ============================================================================
@@ -1997,45 +1997,6 @@ func TestConsultarUltimoPunto_DesdeDB(t *testing.T) {
 	t.Log("ConsultarUltimoPunto lee desde DB cuando buffer vacío")
 }
 
-// TestConsultarPrimerPunto_Exitoso verifica lectura del primer punto
-func TestConsultarPrimerPunto_Exitoso(t *testing.T) {
-	manager := crearManagerEdgeParaTest(t)
-
-	// Crear serie
-	serie := tipos.Serie{
-		SerieId:          1,
-		Path:             "sensor/temp",
-		TipoDatos:        tipos.Real,
-		TamañoBloque:     100,
-		CompresionBloque: tipos.Ninguna,
-		CompresionBytes:  tipos.SinCompresion,
-	}
-	manager.cache.mu.Lock()
-	manager.cache.datos["sensor/temp"] = serie
-	manager.cache.mu.Unlock()
-
-	// Crear mediciones
-	ahora := time.Now().UnixNano()
-	mediciones := []tipos.Medicion{
-		{Tiempo: ahora - 2000, Valor: float64(20.0)}, // Más antiguo
-		{Tiempo: ahora - 1000, Valor: float64(21.0)},
-		{Tiempo: ahora, Valor: float64(22.0)},
-	}
-
-	// Guardar bloque
-	bloque := crearBloqueComprimidoTest(t, serie, mediciones)
-	clave := generarClaveDatos(serie.SerieId, ahora-2000, ahora)
-	err := manager.db.Set(clave, bloque, pebble.Sync)
-	require.NoError(t, err)
-
-	// Consultar primer punto
-	medicion, err := manager.ConsultarPrimerPunto("sensor/temp")
-	require.NoError(t, err)
-	assert.Equal(t, ahora-2000, medicion.Tiempo)
-	assert.Equal(t, float64(20.0), medicion.Valor)
-	t.Log("ConsultarPrimerPunto retorna el punto más antiguo")
-}
-
 // ============================================================================
 // TESTS DE HANDLERS HTTP (comunicacion_nube.go)
 // ============================================================================
@@ -2147,52 +2108,6 @@ func TestHandleConsultaUltimo_Exitoso(t *testing.T) {
 	assert.True(t, respuesta.Encontrado)
 	assert.Equal(t, float64(25.0), respuesta.Medicion.Valor)
 	t.Log("handleConsultaUltimo retorna último punto correctamente")
-}
-
-// TestHandleConsultaPrimero_Exitoso verifica consulta de primer punto
-func TestHandleConsultaPrimero_Exitoso(t *testing.T) {
-	manager := crearManagerEdgeParaTest(t)
-
-	// Crear serie
-	serie := tipos.Serie{
-		SerieId:          1,
-		Path:             "sensor/temp",
-		TipoDatos:        tipos.Real,
-		TamañoBloque:     100,
-		CompresionBloque: tipos.Ninguna,
-		CompresionBytes:  tipos.SinCompresion,
-	}
-	manager.cache.mu.Lock()
-	manager.cache.datos["sensor/temp"] = serie
-	manager.cache.mu.Unlock()
-
-	// Guardar datos en DB
-	ahora := time.Now().UnixNano()
-	mediciones := []tipos.Medicion{
-		{Tiempo: ahora - 1000, Valor: float64(20.0)},
-		{Tiempo: ahora, Valor: float64(25.0)},
-	}
-	bloque := crearBloqueComprimidoTest(t, serie, mediciones)
-	clave := generarClaveDatos(serie.SerieId, ahora-1000, ahora)
-	manager.db.Set(clave, bloque, pebble.Sync)
-
-	// Crear solicitud
-	solicitud := tipos.SolicitudConsultaPunto{Serie: "sensor/temp"}
-	solicitudBytes, _ := tipos.SerializarGob(solicitud)
-
-	req := httptest.NewRequest(http.MethodPost, "/api/consulta/primero", bytes.NewReader(solicitudBytes))
-	w := httptest.NewRecorder()
-
-	manager.handleConsultaPrimero(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var respuesta tipos.RespuestaConsultaPunto
-	err := tipos.DeserializarGob(w.Body.Bytes(), &respuesta)
-	require.NoError(t, err)
-	assert.True(t, respuesta.Encontrado)
-	assert.Equal(t, float64(20.0), respuesta.Medicion.Valor)
-	t.Log("handleConsultaPrimero retorna primer punto correctamente")
 }
 
 // TestEnviarRespuestaGob_Exitoso verifica serialización de respuesta
@@ -2392,4 +2307,430 @@ func TestMigrarPorTiempoAlmacenamiento_MigraBloquesAntiguos(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1, mockS3.putObjectCalls)
 	t.Log("MigrarPorTiempoAlmacenamiento migra bloques antiguos correctamente")
+}
+
+// ============================================================================
+// TESTS DE CONSULTAS DE AGREGACIÓN (consultas.go)
+// ============================================================================
+
+// TestConsultarAgregacion_SerieExacta_Promedio verifica agregación AVG sobre una serie
+func TestConsultarAgregacion_SerieExacta_Promedio(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Crear serie
+	serie := tipos.Serie{
+		SerieId:          1,
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	}
+	manager.cache.mu.Lock()
+	manager.cache.datos["sensor/temp"] = serie
+	manager.cache.mu.Unlock()
+
+	// Crear mediciones: 10, 20, 30 → promedio = 20
+	ahora := time.Now().UnixNano()
+	mediciones := []tipos.Medicion{
+		{Tiempo: ahora - 3000, Valor: float64(10.0)},
+		{Tiempo: ahora - 2000, Valor: float64(20.0)},
+		{Tiempo: ahora - 1000, Valor: float64(30.0)},
+	}
+
+	// Guardar bloque
+	bloque := crearBloqueComprimidoTest(t, serie, mediciones)
+	clave := generarClaveDatos(serie.SerieId, ahora-3000, ahora-1000)
+	err := manager.db.Set(clave, bloque, pebble.Sync)
+	require.NoError(t, err)
+
+	// Consultar promedio
+	resultado, err := manager.ConsultarAgregacion(
+		"sensor/temp",
+		time.Unix(0, ahora-5000),
+		time.Unix(0, ahora),
+		tipos.AgregacionPromedio,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 20.0, resultado)
+	t.Log("ConsultarAgregacion calcula promedio correctamente")
+}
+
+// TestConsultarAgregacion_SerieExacta_MinMax verifica MIN y MAX
+func TestConsultarAgregacion_SerieExacta_MinMax(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	serie := tipos.Serie{
+		SerieId:          1,
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	}
+	manager.cache.mu.Lock()
+	manager.cache.datos["sensor/temp"] = serie
+	manager.cache.mu.Unlock()
+
+	ahora := time.Now().UnixNano()
+	mediciones := []tipos.Medicion{
+		{Tiempo: ahora - 3000, Valor: float64(15.0)},
+		{Tiempo: ahora - 2000, Valor: float64(5.0)},  // MIN
+		{Tiempo: ahora - 1000, Valor: float64(25.0)}, // MAX
+	}
+
+	bloque := crearBloqueComprimidoTest(t, serie, mediciones)
+	clave := generarClaveDatos(serie.SerieId, ahora-3000, ahora-1000)
+	manager.db.Set(clave, bloque, pebble.Sync)
+
+	// MIN
+	min, err := manager.ConsultarAgregacion(
+		"sensor/temp",
+		time.Unix(0, ahora-5000),
+		time.Unix(0, ahora),
+		tipos.AgregacionMinimo,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 5.0, min)
+
+	// MAX
+	max, err := manager.ConsultarAgregacion(
+		"sensor/temp",
+		time.Unix(0, ahora-5000),
+		time.Unix(0, ahora),
+		tipos.AgregacionMaximo,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 25.0, max)
+
+	t.Log("ConsultarAgregacion calcula MIN y MAX correctamente")
+}
+
+// TestConsultarAgregacion_SerieExacta_SumaCount verifica SUM y COUNT
+func TestConsultarAgregacion_SerieExacta_SumaCount(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	serie := tipos.Serie{
+		SerieId:          1,
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	}
+	manager.cache.mu.Lock()
+	manager.cache.datos["sensor/temp"] = serie
+	manager.cache.mu.Unlock()
+
+	ahora := time.Now().UnixNano()
+	mediciones := []tipos.Medicion{
+		{Tiempo: ahora - 3000, Valor: float64(10.0)},
+		{Tiempo: ahora - 2000, Valor: float64(20.0)},
+		{Tiempo: ahora - 1000, Valor: float64(30.0)},
+	}
+
+	bloque := crearBloqueComprimidoTest(t, serie, mediciones)
+	clave := generarClaveDatos(serie.SerieId, ahora-3000, ahora-1000)
+	manager.db.Set(clave, bloque, pebble.Sync)
+
+	// SUM = 60
+	suma, err := manager.ConsultarAgregacion(
+		"sensor/temp",
+		time.Unix(0, ahora-5000),
+		time.Unix(0, ahora),
+		tipos.AgregacionSuma,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 60.0, suma)
+
+	// COUNT = 3
+	count, err := manager.ConsultarAgregacion(
+		"sensor/temp",
+		time.Unix(0, ahora-5000),
+		time.Unix(0, ahora),
+		tipos.AgregacionCount,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 3.0, count)
+
+	t.Log("ConsultarAgregacion calcula SUM y COUNT correctamente")
+}
+
+// TestConsultarAgregacion_SerieNoExiste verifica error para serie inexistente
+func TestConsultarAgregacion_SerieNoExiste(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	_, err := manager.ConsultarAgregacion(
+		"serie/inexistente",
+		time.Now().Add(-time.Hour),
+		time.Now(),
+		tipos.AgregacionPromedio,
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no encontrada")
+	t.Log("ConsultarAgregacion retorna error para serie inexistente")
+}
+
+// TestConsultarAgregacion_SinDatos verifica error cuando no hay datos en rango
+func TestConsultarAgregacion_SinDatos(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	serie := tipos.Serie{
+		SerieId:          1,
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	}
+	manager.cache.mu.Lock()
+	manager.cache.datos["sensor/temp"] = serie
+	manager.cache.mu.Unlock()
+
+	_, err := manager.ConsultarAgregacion(
+		"sensor/temp",
+		time.Now().Add(-time.Hour),
+		time.Now(),
+		tipos.AgregacionPromedio,
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no hay datos")
+	t.Log("ConsultarAgregacion retorna error cuando no hay datos")
+}
+
+// TestConsultarAgregacion_Patron verifica agregación con wildcard
+func TestConsultarAgregacion_Patron(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Crear 2 series con patrón común (wildcard como segmento completo)
+	series := []tipos.Serie{
+		{SerieId: 1, Path: "sensor_01/temp", TipoDatos: tipos.Real, TamañoBloque: 100, CompresionBloque: tipos.Ninguna, CompresionBytes: tipos.SinCompresion},
+		{SerieId: 2, Path: "sensor_02/temp", TipoDatos: tipos.Real, TamañoBloque: 100, CompresionBloque: tipos.Ninguna, CompresionBytes: tipos.SinCompresion},
+	}
+
+	manager.cache.mu.Lock()
+	for _, s := range series {
+		manager.cache.datos[s.Path] = s
+	}
+	manager.cache.mu.Unlock()
+
+	ahora := time.Now().UnixNano()
+
+	// Serie 1: valores 10, 20 → promedio 15
+	mediciones1 := []tipos.Medicion{
+		{Tiempo: ahora - 2000, Valor: float64(10.0)},
+		{Tiempo: ahora - 1000, Valor: float64(20.0)},
+	}
+	bloque1 := crearBloqueComprimidoTest(t, series[0], mediciones1)
+	manager.db.Set(generarClaveDatos(1, ahora-2000, ahora-1000), bloque1, pebble.Sync)
+
+	// Serie 2: valores 30, 40 → promedio 35
+	mediciones2 := []tipos.Medicion{
+		{Tiempo: ahora - 2000, Valor: float64(30.0)},
+		{Tiempo: ahora - 1000, Valor: float64(40.0)},
+	}
+	bloque2 := crearBloqueComprimidoTest(t, series[1], mediciones2)
+	manager.db.Set(generarClaveDatos(2, ahora-2000, ahora-1000), bloque2, pebble.Sync)
+
+	// Consultar con patrón */temp (wildcard como segmento completo)
+	// Valores totales: 10, 20, 30, 40 → promedio = 25
+	resultado, err := manager.ConsultarAgregacion(
+		"*/temp",
+		time.Unix(0, ahora-5000),
+		time.Unix(0, ahora),
+		tipos.AgregacionPromedio,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 25.0, resultado)
+	t.Log("ConsultarAgregacion con patrón wildcard funciona correctamente")
+}
+
+// TestConsultarAgregacion_PatronSinMatch verifica error cuando patrón no tiene coincidencias
+func TestConsultarAgregacion_PatronSinMatch(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	_, err := manager.ConsultarAgregacion(
+		"inexistente_*/temp",
+		time.Now().Add(-time.Hour),
+		time.Now(),
+		tipos.AgregacionPromedio,
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no se encontraron series")
+	t.Log("ConsultarAgregacion retorna error cuando patrón no tiene coincidencias")
+}
+
+// TestConsultarAgregacionTemporal_Buckets verifica downsampling con múltiples buckets
+func TestConsultarAgregacionTemporal_Buckets(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	serie := tipos.Serie{
+		SerieId:          1,
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	}
+	manager.cache.mu.Lock()
+	manager.cache.datos["sensor/temp"] = serie
+	manager.cache.mu.Unlock()
+
+	// Crear mediciones distribuidas en 2 horas
+	ahora := time.Now()
+	hace2Horas := ahora.Add(-2 * time.Hour)
+	hace1Hora := ahora.Add(-1 * time.Hour)
+
+	mediciones := []tipos.Medicion{
+		// Primera hora: 10, 20 → promedio 15
+		{Tiempo: hace2Horas.UnixNano() + 1000, Valor: float64(10.0)},
+		{Tiempo: hace2Horas.UnixNano() + 2000, Valor: float64(20.0)},
+		// Segunda hora: 30, 40 → promedio 35
+		{Tiempo: hace1Hora.UnixNano() + 1000, Valor: float64(30.0)},
+		{Tiempo: hace1Hora.UnixNano() + 2000, Valor: float64(40.0)},
+	}
+
+	bloque := crearBloqueComprimidoTest(t, serie, mediciones)
+	clave := generarClaveDatos(serie.SerieId, hace2Horas.UnixNano(), hace1Hora.UnixNano()+2000)
+	manager.db.Set(clave, bloque, pebble.Sync)
+
+	// Consultar con buckets de 1 hora
+	resultados, err := manager.ConsultarAgregacionTemporal(
+		"sensor/temp",
+		hace2Horas,
+		ahora,
+		tipos.AgregacionPromedio,
+		time.Hour,
+	)
+	require.NoError(t, err)
+	assert.Len(t, resultados, 2)
+
+	// Verificar primer bucket
+	assert.Equal(t, 15.0, resultados[0].Valor)
+
+	// Verificar segundo bucket
+	assert.Equal(t, 35.0, resultados[1].Valor)
+
+	t.Log("ConsultarAgregacionTemporal genera buckets correctamente")
+}
+
+// TestConsultarAgregacionTemporal_IntervaloGrande verifica un solo bucket cuando intervalo > rango
+func TestConsultarAgregacionTemporal_IntervaloGrande(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	serie := tipos.Serie{
+		SerieId:          1,
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	}
+	manager.cache.mu.Lock()
+	manager.cache.datos["sensor/temp"] = serie
+	manager.cache.mu.Unlock()
+
+	ahora := time.Now().UnixNano()
+	mediciones := []tipos.Medicion{
+		{Tiempo: ahora - 3000, Valor: float64(10.0)},
+		{Tiempo: ahora - 2000, Valor: float64(20.0)},
+		{Tiempo: ahora - 1000, Valor: float64(30.0)},
+	}
+
+	bloque := crearBloqueComprimidoTest(t, serie, mediciones)
+	clave := generarClaveDatos(serie.SerieId, ahora-3000, ahora-1000)
+	manager.db.Set(clave, bloque, pebble.Sync)
+
+	// Intervalo de 1 día para rango de pocos segundos → 1 bucket
+	resultados, err := manager.ConsultarAgregacionTemporal(
+		"sensor/temp",
+		time.Unix(0, ahora-5000),
+		time.Unix(0, ahora),
+		tipos.AgregacionPromedio,
+		24*time.Hour,
+	)
+	require.NoError(t, err)
+	assert.Len(t, resultados, 1)
+	assert.Equal(t, 20.0, resultados[0].Valor) // Promedio de 10, 20, 30
+
+	t.Log("ConsultarAgregacionTemporal maneja intervalo > rango correctamente")
+}
+
+// TestConsultarAgregacionTemporal_IntervaloInvalido verifica error con intervalo <= 0
+func TestConsultarAgregacionTemporal_IntervaloInvalido(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	_, err := manager.ConsultarAgregacionTemporal(
+		"sensor/temp",
+		time.Now().Add(-time.Hour),
+		time.Now(),
+		tipos.AgregacionPromedio,
+		0,
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "intervalo")
+	t.Log("ConsultarAgregacionTemporal rechaza intervalo inválido")
+}
+
+// TestConsultarAgregacionTemporal_SinDatos verifica error cuando no hay datos
+func TestConsultarAgregacionTemporal_SinDatos(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	serie := tipos.Serie{
+		SerieId:          1,
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	}
+	manager.cache.mu.Lock()
+	manager.cache.datos["sensor/temp"] = serie
+	manager.cache.mu.Unlock()
+
+	_, err := manager.ConsultarAgregacionTemporal(
+		"sensor/temp",
+		time.Now().Add(-time.Hour),
+		time.Now(),
+		tipos.AgregacionPromedio,
+		time.Minute,
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no hay datos")
+	t.Log("ConsultarAgregacionTemporal retorna error cuando no hay datos")
+}
+
+// TestResolverSeries_PathExacto verifica resolución de path exacto
+func TestResolverSeries_PathExacto(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	serie := tipos.Serie{
+		SerieId: 1,
+		Path:    "sensor/temp",
+	}
+	manager.cache.mu.Lock()
+	manager.cache.datos["sensor/temp"] = serie
+	manager.cache.mu.Unlock()
+
+	series, err := manager.resolverSeries("sensor/temp")
+	require.NoError(t, err)
+	assert.Len(t, series, 1)
+	assert.Equal(t, "sensor/temp", series[0].Path)
+	t.Log("resolverSeries resuelve path exacto correctamente")
+}
+
+// TestResolverSeries_Patron verifica resolución de patrón wildcard
+func TestResolverSeries_Patron(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	manager.cache.mu.Lock()
+	manager.cache.datos["sensor_01/temp"] = tipos.Serie{SerieId: 1, Path: "sensor_01/temp"}
+	manager.cache.datos["sensor_02/temp"] = tipos.Serie{SerieId: 2, Path: "sensor_02/temp"}
+	manager.cache.datos["sensor_01/humedad"] = tipos.Serie{SerieId: 3, Path: "sensor_01/humedad"}
+	manager.cache.mu.Unlock()
+
+	series, err := manager.resolverSeries("*/temp")
+	require.NoError(t, err)
+	assert.Len(t, series, 2)
+	t.Log("resolverSeries resuelve patrón wildcard correctamente")
 }

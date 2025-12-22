@@ -24,14 +24,16 @@ const (
 	OperadorMenor      TipoOperador = "<"
 )
 
-type TipoAgregacion string
+// Alias para mantener compatibilidad con código existente en reglas
+// Los tipos canónicos están en tipos/agregacion.go
+type TipoAgregacion = tipos.TipoAgregacion
 
 const (
-	AgregacionPromedio TipoAgregacion = "promedio"
-	AgregacionMaximo   TipoAgregacion = "maximo"
-	AgregacionMinimo   TipoAgregacion = "minimo"
-	AgregacionSuma     TipoAgregacion = "suma"
-	AgregacionCount    TipoAgregacion = "count"
+	AgregacionPromedio = tipos.AgregacionPromedio
+	AgregacionMaximo   = tipos.AgregacionMaximo
+	AgregacionMinimo   = tipos.AgregacionMinimo
+	AgregacionSuma     = tipos.AgregacionSuma
+	AgregacionCount    = tipos.AgregacionCount
 )
 
 type TipoLogica string
@@ -199,8 +201,9 @@ func (mr *MotorReglas) evaluarCondicionesRegla(regla *Regla, timestamp time.Time
 	return true
 }
 
-// calcularAgregacionSimple calcula una agregación sobre un slice de valores
-func calcularAgregacionSimple(valores []float64, agregacion TipoAgregacion) (float64, error) {
+// CalcularAgregacionSimple calcula una agregación sobre un slice de valores.
+// Función pública para ser usada por consultas y reglas.
+func CalcularAgregacionSimple(valores []float64, agregacion TipoAgregacion) (float64, error) {
 	if len(valores) == 0 {
 		return 0, fmt.Errorf("no hay valores para agregar")
 	}
@@ -371,7 +374,7 @@ func (mr *MotorReglas) calcularAgregacion(series []string, agregacion TipoAgrega
 		}
 
 		// Usar helper para calcular agregación de esta serie
-		valorSerie, err := calcularAgregacionSimple(valores, agregacion)
+		valorSerie, err := CalcularAgregacionSimple(valores, agregacion)
 		if err != nil {
 			continue
 		}
@@ -384,7 +387,7 @@ func (mr *MotorReglas) calcularAgregacion(series []string, agregacion TipoAgrega
 	}
 
 	// Usar helper nuevamente para agregar entre series
-	return calcularAgregacionSimple(valoresPorSerie, agregacion)
+	return CalcularAgregacionSimple(valoresPorSerie, agregacion)
 }
 
 func (mr *MotorReglas) obtenerValorSerie(serie string, tiempoInicio, tiempoFin time.Time) (interface{}, error) {

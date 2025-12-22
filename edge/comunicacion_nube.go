@@ -9,7 +9,7 @@ import (
 	"log"
 	"net/http"
 	"time"
- 
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/cbiale/sensorwave/tipos"
@@ -84,7 +84,8 @@ func (me *ManagerEdge) iniciarServidorHTTP() chan struct{} {
 	// Registrar handlers REST para consultas del despachador
 	mux.HandleFunc("/api/consulta/rango", me.handleConsultaRango)
 	mux.HandleFunc("/api/consulta/ultimo", me.handleConsultaUltimo)
-	mux.HandleFunc("/api/consulta/primero", me.handleConsultaPrimero)
+	mux.HandleFunc("/api/consulta/agregacion", me.handleConsultaAgregacion)
+	mux.HandleFunc("/api/consulta/agregacion-temporal", me.handleConsultaAgregacionTemporal)
 
 	server := &http.Server{
 		Addr:         ":" + me.puertoHTTP,
@@ -182,44 +183,6 @@ func (me *ManagerEdge) handleConsultaUltimo(w http.ResponseWriter, r *http.Reque
 	enviarRespuestaGob(w, respuesta)
 }
 
-// handleConsultaPrimero maneja consultas del primer punto via REST
-func (me *ManagerEdge) handleConsultaPrimero(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Leer body
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		enviarRespuestaError(w, "Error leyendo body: "+err.Error())
-		return
-	}
-	defer r.Body.Close()
-
-	// Deserializar solicitud con Gob
-	var solicitud tipos.SolicitudConsultaPunto
-	if err := tipos.DeserializarGob(body, &solicitud); err != nil {
-		enviarRespuestaError(w, "Error deserializando solicitud: "+err.Error())
-		return
-	}
-
-	// Ejecutar consulta
-	medicion, err := me.ConsultarPrimerPunto(solicitud.Serie)
-
-	// Construir respuesta
-	respuesta := tipos.RespuestaConsultaPunto{
-		Medicion:   medicion,
-		Encontrado: err == nil,
-	}
-	if err != nil {
-		respuesta.Error = err.Error()
-	}
-
-	// Serializar y enviar respuesta
-	enviarRespuestaGob(w, respuesta)
-}
-
 // enviarRespuestaGob serializa y envía una respuesta usando Gob
 func enviarRespuestaGob(w http.ResponseWriter, respuesta interface{}) {
 	respuestaBytes, err := tipos.SerializarGob(respuesta)
@@ -237,4 +200,85 @@ func enviarRespuestaGob(w http.ResponseWriter, respuesta interface{}) {
 func enviarRespuestaError(w http.ResponseWriter, mensaje string) {
 	log.Printf("Error en handler: %s", mensaje)
 	http.Error(w, mensaje, http.StatusBadRequest)
+}
+
+// handleConsultaAgregacion maneja consultas de agregación simple via REST
+func (me *ManagerEdge) handleConsultaAgregacion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Leer body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		enviarRespuestaError(w, "Error leyendo body: "+err.Error())
+		return
+	}
+	defer r.Body.Close()
+
+	// Deserializar solicitud con Gob
+	var solicitud tipos.SolicitudConsultaAgregacion
+	if err := tipos.DeserializarGob(body, &solicitud); err != nil {
+		enviarRespuestaError(w, "Error deserializando solicitud: "+err.Error())
+		return
+	}
+
+	// Ejecutar consulta
+	tiempoInicio := time.Unix(0, solicitud.TiempoInicio)
+	tiempoFin := time.Unix(0, solicitud.TiempoFin)
+
+	valor, err := me.ConsultarAgregacion(solicitud.Serie, tiempoInicio, tiempoFin, solicitud.Agregacion)
+
+	// Construir respuesta
+	respuesta := tipos.RespuestaConsultaAgregacion{
+		Valor: valor,
+	}
+	if err != nil {
+		respuesta.Error = err.Error()
+	}
+
+	// Serializar y enviar respuesta
+	enviarRespuestaGob(w, respuesta)
+}
+
+// handleConsultaAgregacionTemporal maneja consultas de downsampling via REST
+func (me *ManagerEdge) handleConsultaAgregacionTemporal(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Leer body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		enviarRespuestaError(w, "Error leyendo body: "+err.Error())
+		return
+	}
+	defer r.Body.Close()
+
+	// Deserializar solicitud con Gob
+	var solicitud tipos.SolicitudConsultaAgregacionTemporal
+	if err := tipos.DeserializarGob(body, &solicitud); err != nil {
+		enviarRespuestaError(w, "Error deserializando solicitud: "+err.Error())
+		return
+	}
+
+	// Ejecutar consulta
+	tiempoInicio := time.Unix(0, solicitud.TiempoInicio)
+	tiempoFin := time.Unix(0, solicitud.TiempoFin)
+	intervalo := time.Duration(solicitud.Intervalo)
+
+	resultados, err := me.ConsultarAgregacionTemporal(solicitud.Serie, tiempoInicio, tiempoFin, solicitud.Agregacion, intervalo)
+
+	// Construir respuesta
+	respuesta := tipos.RespuestaConsultaAgregacionTemporal{
+		Resultados: resultados,
+	}
+	if err != nil {
+		respuesta.Error = err.Error()
+	}
+
+	// Serializar y enviar respuesta
+	enviarRespuestaGob(w, respuesta)
 }

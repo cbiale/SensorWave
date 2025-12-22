@@ -34,6 +34,35 @@ type RespuestaConsultaPunto struct {
 	Error      string
 }
 
+// SolicitudConsultaAgregacion representa una solicitud de agregación simple
+type SolicitudConsultaAgregacion struct {
+	Serie        string
+	TiempoInicio int64 // Unix nanosegundos
+	TiempoFin    int64 // Unix nanosegundos
+	Agregacion   TipoAgregacion
+}
+
+// SolicitudConsultaAgregacionTemporal representa una solicitud de downsampling
+type SolicitudConsultaAgregacionTemporal struct {
+	Serie        string
+	TiempoInicio int64 // Unix nanosegundos
+	TiempoFin    int64 // Unix nanosegundos
+	Agregacion   TipoAgregacion
+	Intervalo    int64 // Duration en nanosegundos
+}
+
+// RespuestaConsultaAgregacion respuesta con valor agregado
+type RespuestaConsultaAgregacion struct {
+	Valor float64
+	Error string
+}
+
+// RespuestaConsultaAgregacionTemporal respuesta con resultados de downsampling
+type RespuestaConsultaAgregacionTemporal struct {
+	Resultados []ResultadoAgregacionTemporal
+	Error      string
+}
+
 // ============================================================================
 // FUNCIONES DE SERIALIZACIÓN GOB
 // ============================================================================
@@ -65,6 +94,14 @@ func init() {
 	gob.Register(SolicitudConsultaPunto{})
 	gob.Register(RespuestaConsultaRango{})
 	gob.Register(RespuestaConsultaPunto{})
+
+	// Tipos de consulta de agregación
+	gob.Register(SolicitudConsultaAgregacion{})
+	gob.Register(SolicitudConsultaAgregacionTemporal{})
+	gob.Register(RespuestaConsultaAgregacion{})
+	gob.Register(RespuestaConsultaAgregacionTemporal{})
+	gob.Register(ResultadoAgregacionTemporal{})
+	gob.Register([]ResultadoAgregacionTemporal{})
 
 	// Tipos de datos
 	gob.Register(Medicion{})

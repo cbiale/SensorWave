@@ -1,12 +1,11 @@
 package edge
 
 import (
-	"strings"
 	"fmt"
 
 	"github.com/cbiale/sensorwave/tipos"
 )
- 
+
 // ObtenerSeries retorna la metadata de una serie por su path
 func (me *ManagerEdge) ObtenerSeries(path string) (tipos.Serie, error) {
 	// Lectura sin bloqueo para casos comunes
@@ -41,7 +40,7 @@ func (me *ManagerEdge) ListarSeriesPorPath(pathPattern string) ([]tipos.Serie, e
 
 	var series []tipos.Serie
 	for _, serie := range me.cache.datos {
-		if matchPath(serie.Path, pathPattern) {
+		if tipos.MatchPath(serie.Path, pathPattern) {
 			series = append(series, serie)
 		}
 	}
@@ -68,34 +67,3 @@ func (me *ManagerEdge) ListarSeriesPorDispositivo(dispositivoID string) ([]tipos
 	pathPattern := dispositivoID + "/*"
 	return me.ListarSeriesPorPath(pathPattern)
 }
-
-// matchPath verifica si un path coincide con un patrón (soporta wildcard *)
-func matchPath(path, pattern string) bool {
-	if pattern == "*" {
-		return true
-	}
-
-	if !strings.Contains(pattern, "*") {
-		return path == pattern
-	}
-
-	parts := strings.Split(pattern, "/")
-	pathParts := strings.Split(path, "/")
-
-	if len(parts) != len(pathParts) {
-		return false
-	}
-
-	for i, part := range parts {
-		if part == "*" {
-			continue
-		}
-		if part != pathParts[i] {
-			return false
-		}
-	}
-
-	return true
-}
-
-

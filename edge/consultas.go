@@ -160,55 +160,6 @@ func (me *ManagerEdge) ConsultarUltimoPunto(nombreSerie string) (tipos.Medicion,
 	return ultimaMedicion, nil
 }
 
-// ConsultarPrimerPunto obtiene la primera medición registrada para una serie
-func (me *ManagerEdge) ConsultarPrimerPunto(nombreSerie string) (tipos.Medicion, error) {
-	serie, err := me.ObtenerSeries(nombreSerie)
-	if err != nil {
-		return tipos.Medicion{}, fmt.Errorf("serie no encontrada: %s", nombreSerie)
-	}
-
-	// Buscar el primer bloque para esta serie
-	keyPrefix := fmt.Sprintf("data/%010d/", serie.SerieId)
-	lowerBound := []byte(keyPrefix)
-	upperBound := []byte(keyPrefix + "~")
-
-	iter, err := me.db.NewIter(&pebble.IterOptions{
-		LowerBound: lowerBound,
-		UpperBound: upperBound,
-	})
-	if err != nil {
-		return tipos.Medicion{}, fmt.Errorf("error al crear iterador: %v", err)
-	}
-	defer iter.Close()
-
-	// Ir al primer elemento
-	if !iter.First() {
-		return tipos.Medicion{}, fmt.Errorf("no hay mediciones para la serie: %s", nombreSerie)
-	}
-
-	datosComprimidos := make([]byte, len(iter.Value()))
-	copy(datosComprimidos, iter.Value())
-
-	mediciones, err := me.descomprimirBloque(datosComprimidos, serie)
-	if err != nil {
-		return tipos.Medicion{}, fmt.Errorf("error al descomprimir primer bloque: %v", err)
-	}
-
-	if len(mediciones) == 0 {
-		return tipos.Medicion{}, fmt.Errorf("bloque vacío para serie: %s", nombreSerie)
-	}
-
-	// Encontrar la medición más antigua en el bloque
-	primeraMedicion := mediciones[0]
-	for _, m := range mediciones[1:] {
-		if m.Tiempo < primeraMedicion.Tiempo {
-			primeraMedicion = m
-		}
-	}
-
-	return primeraMedicion, nil
-}
-
 // deberiaSkipearBloque determina si un bloque debe ser omitido basado en su rango temporal
 func (me *ManagerEdge) deberiaSkipearBloque(clave string, tiempoInicio, tiempoFin int64) bool {
 	partes := strings.Split(clave, "/")
@@ -239,4 +190,160 @@ func (me *ManagerEdge) deberiaSkipearBloque(clave string, tiempoInicio, tiempoFi
 	}
 
 	return false
+}
+
+// resolverSeries resuelve un path (exacto o con patrón wildcard) a una lista de series.
+// Si el path contiene "*", busca por patrón usando ListarSeriesPorPath.
+// Si no, busca la serie exacta usando ObtenerSeries.
+func (me *ManagerEdge) resolverSeries(path string) ([]tipos.Serie, error) {
+	if strings.Contains(path, "*") {
+		series, err := me.ListarSeriesPorPath(path)
+		if err != nil {
+			return nil, err
+		}
+		if len(series) == 0 {
+			return nil, fmt.Errorf("no se encontraron series para el patrón: %s", path)
+		}
+		return series, nil
+	}
+
+	// Path exacto
+	serie, err := me.ObtenerSeries(path)
+	if err != nil {
+		return nil, fmt.Errorf("serie no encontrada: %s", path)
+	}
+	return []tipos.Serie{serie}, nil
+}
+
+// ConsultarAgregacion calcula una agregación sobre una o más series.
+// El parámetro path puede ser:
+//   - Path exacto: "sensor_01/temperatura"
+//   - Patrón con wildcard: "sensor_*/temperatura" o "*/temperatura"
+//
+// Retorna el valor agregado de todas las mediciones en el rango temporal.
+func (me *ManagerEdge) ConsultarAgregacion(
+	path string,
+	tiempoInicio, tiempoFin time.Time,
+	agregacion tipos.TipoAgregacion,
+) (float64, error) {
+	// Resolver series (path exacto o patrón)
+	series, err := me.resolverSeries(path)
+	if err != nil {
+		return 0, err
+	}
+
+	// Recolectar todos los valores de todas las series
+	var todosLosValores []float64
+
+	for _, serie := range series {
+		mediciones, err := me.ConsultarRango(serie.Path, tiempoInicio, tiempoFin)
+		if err != nil {
+			continue // Ignorar series sin datos
+		}
+
+		for _, medicion := range mediciones {
+			valorFloat, err := convertirAFloat64(medicion.Valor)
+			if err != nil {
+				// Para COUNT, contar cualquier valor como 1
+				if agregacion == tipos.AgregacionCount {
+					valorFloat = 1.0
+				} else {
+					continue // Saltar valores no numéricos para otras agregaciones
+				}
+			}
+			todosLosValores = append(todosLosValores, valorFloat)
+		}
+	}
+
+	if len(todosLosValores) == 0 {
+		return 0, fmt.Errorf("no hay datos en el rango especificado para: %s", path)
+	}
+
+	return CalcularAgregacionSimple(todosLosValores, agregacion)
+}
+
+// ConsultarAgregacionTemporal calcula agregaciones agrupadas por intervalos de tiempo (downsampling).
+// Retorna un slice con un valor agregado por cada bucket temporal.
+//
+// El parámetro path puede ser:
+//   - Path exacto: "sensor_01/temperatura"
+//   - Patrón con wildcard: "sensor_*/temperatura"
+//
+// Ejemplo: ConsultarAgregacionTemporal("sensor_01/temp", inicio, fin, AgregacionPromedio, time.Hour)
+// retorna el promedio por cada hora en el rango.
+func (me *ManagerEdge) ConsultarAgregacionTemporal(
+	path string,
+	tiempoInicio, tiempoFin time.Time,
+	agregacion tipos.TipoAgregacion,
+	intervalo time.Duration,
+) ([]tipos.ResultadoAgregacionTemporal, error) {
+	if intervalo <= 0 {
+		return nil, fmt.Errorf("el intervalo debe ser mayor a cero")
+	}
+
+	// Resolver series (path exacto o patrón)
+	series, err := me.resolverSeries(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Recolectar todas las mediciones de todas las series
+	var todasLasMediciones []tipos.Medicion
+
+	for _, serie := range series {
+		mediciones, err := me.ConsultarRango(serie.Path, tiempoInicio, tiempoFin)
+		if err != nil {
+			continue
+		}
+		todasLasMediciones = append(todasLasMediciones, mediciones...)
+	}
+
+	if len(todasLasMediciones) == 0 {
+		return nil, fmt.Errorf("no hay datos en el rango especificado para: %s", path)
+	}
+
+	// Crear buckets temporales
+	var resultados []tipos.ResultadoAgregacionTemporal
+	bucketInicio := tiempoInicio
+
+	for bucketInicio.Before(tiempoFin) {
+		bucketFin := bucketInicio.Add(intervalo)
+		if bucketFin.After(tiempoFin) {
+			bucketFin = tiempoFin
+		}
+
+		// Filtrar mediciones dentro de este bucket
+		bucketInicioNano := bucketInicio.UnixNano()
+		bucketFinNano := bucketFin.UnixNano()
+
+		var valoresBucket []float64
+		for _, medicion := range todasLasMediciones {
+			if medicion.Tiempo >= bucketInicioNano && medicion.Tiempo < bucketFinNano {
+				valorFloat, err := convertirAFloat64(medicion.Valor)
+				if err != nil {
+					if agregacion == tipos.AgregacionCount {
+						valorFloat = 1.0
+					} else {
+						continue
+					}
+				}
+				valoresBucket = append(valoresBucket, valorFloat)
+			}
+		}
+
+		// Calcular agregación para este bucket si tiene datos
+		if len(valoresBucket) > 0 {
+			valor, err := CalcularAgregacionSimple(valoresBucket, agregacion)
+			if err == nil {
+				resultados = append(resultados, tipos.ResultadoAgregacionTemporal{
+					Tiempo: bucketInicio,
+					Valor:  valor,
+				})
+			}
+		}
+
+		bucketInicio = bucketFin
+	}
+
+	return resultados, nil
 }

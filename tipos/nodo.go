@@ -14,7 +14,7 @@ type Nodo struct {
 type Serie struct {
 	SerieId              int                  // ID de la serie en la base de datos
 	Path                 string               // Path jerárquico: "dispositivo_001/temperatura"
-	Tags                 map[string]string    // Tags: {"ubicacion": "sala1", "tipo": "DHT22"}
+	Tags                 map[string]string    // Tags: {"unidad": "Celsius", "tipo": "DHT22"}
 	TipoDatos            TipoDatos            // Tipo de datos almacenados
 	CompresionBloque     TipoCompresionBloque // Compresión nivel bloque
 	CompresionBytes      TipoCompresion       // Compresión nivel valores (algoritmos específicos por tipo)

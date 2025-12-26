@@ -131,11 +131,11 @@ func (me *ManagerEdge) handleConsultaRango(w http.ResponseWriter, r *http.Reques
 	tiempoInicio := time.Unix(0, solicitud.TiempoInicio)
 	tiempoFin := time.Unix(0, solicitud.TiempoFin)
 
-	mediciones, err := me.ConsultarRango(solicitud.Serie, tiempoInicio, tiempoFin)
+	resultado, err := me.ConsultarRango(solicitud.Serie, tiempoInicio, tiempoFin)
 
 	// Construir respuesta
 	respuesta := tipos.RespuestaConsultaRango{
-		Mediciones: mediciones,
+		Resultado: resultado,
 	}
 	if err != nil {
 		respuesta.Error = err.Error()
@@ -228,11 +228,11 @@ func (me *ManagerEdge) handleConsultaAgregacion(w http.ResponseWriter, r *http.R
 	tiempoInicio := time.Unix(0, solicitud.TiempoInicio)
 	tiempoFin := time.Unix(0, solicitud.TiempoFin)
 
-	valor, err := me.ConsultarAgregacion(solicitud.Serie, tiempoInicio, tiempoFin, solicitud.Agregacion)
+	resultado, err := me.ConsultarAgregacion(solicitud.Serie, tiempoInicio, tiempoFin, solicitud.Agregacion)
 
 	// Construir respuesta
 	respuesta := tipos.RespuestaConsultaAgregacion{
-		Valor: valor,
+		Resultado: resultado,
 	}
 	if err != nil {
 		respuesta.Error = err.Error()
@@ -269,11 +269,11 @@ func (me *ManagerEdge) handleConsultaAgregacionTemporal(w http.ResponseWriter, r
 	tiempoFin := time.Unix(0, solicitud.TiempoFin)
 	intervalo := time.Duration(solicitud.Intervalo)
 
-	resultados, err := me.ConsultarAgregacionTemporal(solicitud.Serie, tiempoInicio, tiempoFin, solicitud.Agregacion, intervalo)
+	resultado, err := me.ConsultarAgregacionTemporal(solicitud.Serie, tiempoInicio, tiempoFin, solicitud.Agregacion, intervalo)
 
 	// Construir respuesta
 	respuesta := tipos.RespuestaConsultaAgregacionTemporal{
-		Resultados: resultados,
+		Resultado: resultado,
 	}
 	if err != nil {
 		respuesta.Error = err.Error()

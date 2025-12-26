@@ -1,7 +1,5 @@
 package tipos
 
-import "time"
-
 // TipoAgregacion define los tipos de agregación soportados para consultas
 type TipoAgregacion string
 
@@ -13,9 +11,11 @@ const (
 	AgregacionCount    TipoAgregacion = "count"
 )
 
-// ResultadoAgregacionTemporal representa un valor agregado para un bucket temporal
-// Usado por ConsultarAgregacionTemporal para retornar resultados de downsampling
+// ResultadoAgregacionTemporal representa el resultado de una agregación temporal en formato matricial.
+// Cada serie temporal es una columna, los buckets de tiempo son las filas.
+// Valores faltantes se representan como math.NaN().
 type ResultadoAgregacionTemporal struct {
-	Tiempo time.Time // Inicio del bucket temporal
-	Valor  float64   // Valor agregado para este bucket
+	Series  []string    // Columnas: nombres de series ordenados alfabéticamente
+	Tiempos []int64     // Filas: inicio de cada bucket (Unix nanosegundos)
+	Valores [][]float64 // Matriz [bucket][serie], math.NaN() = sin datos en ese bucket
 }

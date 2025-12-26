@@ -423,14 +423,21 @@ func (mr *MotorReglas) obtenerDatosEnVentana(serie string, tiempoInicio, tiempoF
 
 	// Si no hay datos en cache, consultar la base de datos
 	if mr.manager != nil {
-		mediciones, err := mr.manager.ConsultarRango(serie, tiempoInicio, tiempoFin)
+		resultado, err := mr.manager.ConsultarRango(serie, tiempoInicio, tiempoFin)
 		if err == nil {
-			// Convertir Medicion a DatoTemporal (ahora acepta todos los tipos)
-			for _, medicion := range mediciones {
-				datosValidos = append(datosValidos, DatoTemporal{
-					Timestamp: time.Unix(0, medicion.Tiempo),
-					Valor:     medicion.Valor,
-				})
+			// Convertir ResultadoConsultaRango a DatoTemporal
+			// El resultado tabular puede tener múltiples columnas, extraemos todos los valores
+			for filaIdx, tiempo := range resultado.Tiempos {
+				if filaIdx < len(resultado.Valores) {
+					for _, valor := range resultado.Valores[filaIdx] {
+						if valor != nil {
+							datosValidos = append(datosValidos, DatoTemporal{
+								Timestamp: time.Unix(0, tiempo),
+								Valor:     valor,
+							})
+						}
+					}
+				}
 			}
 			return datosValidos
 		}

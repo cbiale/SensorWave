@@ -1872,10 +1872,12 @@ func TestConsultarRango_SinDatos(t *testing.T) {
 	manager.cache.datos["sensor/temp"] = serie
 	manager.cache.mu.Unlock()
 
-	mediciones, err := manager.ConsultarRango("sensor/temp", time.Now().Add(-1*time.Hour), time.Now())
+	resultado, err := manager.ConsultarRango("sensor/temp", time.Now().Add(-1*time.Hour), time.Now())
 	require.NoError(t, err)
-	assert.Empty(t, mediciones)
-	t.Log("ConsultarRango retorna lista vacía cuando no hay datos")
+	assert.Empty(t, resultado.Tiempos)
+	assert.Empty(t, resultado.Series)
+	assert.Empty(t, resultado.Valores)
+	t.Log("ConsultarRango retorna resultado vacío cuando no hay datos")
 }
 
 // TestConsultarRango_ConDatosEnDB verifica consulta con datos en DB
@@ -1916,7 +1918,18 @@ func TestConsultarRango_ConDatosEnDB(t *testing.T) {
 		time.Unix(0, ahora-5000),
 		time.Unix(0, ahora))
 	require.NoError(t, err)
-	assert.Len(t, resultado, 3)
+
+	// Verificar formato tabular
+	assert.Len(t, resultado.Tiempos, 3, "Debe haber 3 timestamps")
+	assert.Equal(t, []string{"sensor/temp"}, resultado.Series, "Debe haber una serie")
+	assert.Len(t, resultado.Valores, 3, "Debe haber 3 filas de valores")
+
+	// Verificar que cada fila tiene una columna con el valor correcto
+	for i, fila := range resultado.Valores {
+		assert.Len(t, fila, 1, "Cada fila debe tener 1 columna")
+		assert.NotNil(t, fila[0], "El valor no debe ser nil")
+		t.Logf("Fila %d: tiempo=%d, valor=%v", i, resultado.Tiempos[i], fila[0])
+	}
 	t.Log("ConsultarRango lee y descomprime datos de DB correctamente")
 }
 
@@ -2352,7 +2365,9 @@ func TestConsultarAgregacion_SerieExacta_Promedio(t *testing.T) {
 		tipos.AgregacionPromedio,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, 20.0, resultado)
+	require.Len(t, resultado.Series, 1)
+	assert.Equal(t, "sensor/temp", resultado.Series[0])
+	assert.Equal(t, 20.0, resultado.Valores[0])
 	t.Log("ConsultarAgregacion calcula promedio correctamente")
 }
 
@@ -2384,24 +2399,26 @@ func TestConsultarAgregacion_SerieExacta_MinMax(t *testing.T) {
 	manager.db.Set(clave, bloque, pebble.Sync)
 
 	// MIN
-	min, err := manager.ConsultarAgregacion(
+	minResult, err := manager.ConsultarAgregacion(
 		"sensor/temp",
 		time.Unix(0, ahora-5000),
 		time.Unix(0, ahora),
 		tipos.AgregacionMinimo,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, 5.0, min)
+	require.Len(t, minResult.Series, 1)
+	assert.Equal(t, 5.0, minResult.Valores[0])
 
 	// MAX
-	max, err := manager.ConsultarAgregacion(
+	maxResult, err := manager.ConsultarAgregacion(
 		"sensor/temp",
 		time.Unix(0, ahora-5000),
 		time.Unix(0, ahora),
 		tipos.AgregacionMaximo,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, 25.0, max)
+	require.Len(t, maxResult.Series, 1)
+	assert.Equal(t, 25.0, maxResult.Valores[0])
 
 	t.Log("ConsultarAgregacion calcula MIN y MAX correctamente")
 }
@@ -2434,24 +2451,26 @@ func TestConsultarAgregacion_SerieExacta_SumaCount(t *testing.T) {
 	manager.db.Set(clave, bloque, pebble.Sync)
 
 	// SUM = 60
-	suma, err := manager.ConsultarAgregacion(
+	sumaResult, err := manager.ConsultarAgregacion(
 		"sensor/temp",
 		time.Unix(0, ahora-5000),
 		time.Unix(0, ahora),
 		tipos.AgregacionSuma,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, 60.0, suma)
+	require.Len(t, sumaResult.Series, 1)
+	assert.Equal(t, 60.0, sumaResult.Valores[0])
 
 	// COUNT = 3
-	count, err := manager.ConsultarAgregacion(
+	countResult, err := manager.ConsultarAgregacion(
 		"sensor/temp",
 		time.Unix(0, ahora-5000),
 		time.Unix(0, ahora),
 		tipos.AgregacionCount,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, 3.0, count)
+	require.Len(t, countResult.Series, 1)
+	assert.Equal(t, 3.0, countResult.Valores[0])
 
 	t.Log("ConsultarAgregacion calcula SUM y COUNT correctamente")
 }
@@ -2533,7 +2552,7 @@ func TestConsultarAgregacion_Patron(t *testing.T) {
 	manager.db.Set(generarClaveDatos(2, ahora-2000, ahora-1000), bloque2, pebble.Sync)
 
 	// Consultar con patrón */temp (wildcard como segmento completo)
-	// Valores totales: 10, 20, 30, 40 → promedio = 25
+	// Serie 1: promedio 15, Serie 2: promedio 35 (ahora columnar, cada serie tiene su valor)
 	resultado, err := manager.ConsultarAgregacion(
 		"*/temp",
 		time.Unix(0, ahora-5000),
@@ -2541,7 +2560,12 @@ func TestConsultarAgregacion_Patron(t *testing.T) {
 		tipos.AgregacionPromedio,
 	)
 	require.NoError(t, err)
-	assert.Equal(t, 25.0, resultado)
+	require.Len(t, resultado.Series, 2)
+	// Series ordenadas alfabéticamente
+	assert.Equal(t, "sensor_01/temp", resultado.Series[0])
+	assert.Equal(t, "sensor_02/temp", resultado.Series[1])
+	assert.Equal(t, 15.0, resultado.Valores[0]) // promedio de 10, 20
+	assert.Equal(t, 35.0, resultado.Valores[1]) // promedio de 30, 40
 	t.Log("ConsultarAgregacion con patrón wildcard funciona correctamente")
 }
 
@@ -2595,7 +2619,7 @@ func TestConsultarAgregacionTemporal_Buckets(t *testing.T) {
 	manager.db.Set(clave, bloque, pebble.Sync)
 
 	// Consultar con buckets de 1 hora
-	resultados, err := manager.ConsultarAgregacionTemporal(
+	resultado, err := manager.ConsultarAgregacionTemporal(
 		"sensor/temp",
 		hace2Horas,
 		ahora,
@@ -2603,13 +2627,15 @@ func TestConsultarAgregacionTemporal_Buckets(t *testing.T) {
 		time.Hour,
 	)
 	require.NoError(t, err)
-	assert.Len(t, resultados, 2)
+	assert.Len(t, resultado.Tiempos, 2)
+	assert.Len(t, resultado.Series, 1)
+	assert.Equal(t, "sensor/temp", resultado.Series[0])
 
 	// Verificar primer bucket
-	assert.Equal(t, 15.0, resultados[0].Valor)
+	assert.Equal(t, 15.0, resultado.Valores[0][0])
 
 	// Verificar segundo bucket
-	assert.Equal(t, 35.0, resultados[1].Valor)
+	assert.Equal(t, 35.0, resultado.Valores[1][0])
 
 	t.Log("ConsultarAgregacionTemporal genera buckets correctamente")
 }
@@ -2642,7 +2668,7 @@ func TestConsultarAgregacionTemporal_IntervaloGrande(t *testing.T) {
 	manager.db.Set(clave, bloque, pebble.Sync)
 
 	// Intervalo de 1 día para rango de pocos segundos → 1 bucket
-	resultados, err := manager.ConsultarAgregacionTemporal(
+	resultado, err := manager.ConsultarAgregacionTemporal(
 		"sensor/temp",
 		time.Unix(0, ahora-5000),
 		time.Unix(0, ahora),
@@ -2650,8 +2676,9 @@ func TestConsultarAgregacionTemporal_IntervaloGrande(t *testing.T) {
 		24*time.Hour,
 	)
 	require.NoError(t, err)
-	assert.Len(t, resultados, 1)
-	assert.Equal(t, 20.0, resultados[0].Valor) // Promedio de 10, 20, 30
+	assert.Len(t, resultado.Tiempos, 1)
+	assert.Len(t, resultado.Series, 1)
+	assert.Equal(t, 20.0, resultado.Valores[0][0]) // Promedio de 10, 20, 30
 
 	t.Log("ConsultarAgregacionTemporal maneja intervalo > rango correctamente")
 }

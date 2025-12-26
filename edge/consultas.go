@@ -5,6 +5,8 @@ package edge
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,28 +16,100 @@ import (
 )
 
 // ConsultarRango consulta mediciones de una o más series dentro de un rango de tiempo
-// y descomprime los datos antes de retornarlos.
+// y retorna los resultados en formato tabular.
 // El parámetro path puede ser:
 //   - Path exacto: "sensor_01/temperatura"
-//   - Patrón con wildcard: "sensor_*/temperatura" o "*/temperatura"
-func (me *ManagerEdge) ConsultarRango(path string, tiempoInicio, tiempoFin time.Time) ([]tipos.Medicion, error) {
+//   - Patrón con wildcard: "sensor_*/temperatura", "*/temperatura" o "sensor_1/*"
+//
+// El resultado es una matriz donde:
+//   - Cada columna representa una serie (ordenadas alfabéticamente por path)
+//   - Cada fila representa un timestamp único (ordenados ascendente)
+//   - Los valores faltantes se representan como nil
+func (me *ManagerEdge) ConsultarRango(path string, tiempoInicio, tiempoFin time.Time) (tipos.ResultadoConsultaRango, error) {
 	// Resolver series (path exacto o patrón wildcard)
 	series, err := me.resolverSeries(path)
 	if err != nil {
-		return nil, err
+		return tipos.ResultadoConsultaRango{}, err
 	}
 
-	// Recolectar y combinar resultados de todas las series
-	var todasMediciones []tipos.Medicion
+	// Mapa para almacenar mediciones por serie: path -> timestamp -> valor
+	medicionesPorSerie := make(map[string]map[int64]interface{})
+	timestampsUnicos := make(map[int64]struct{})
+
+	// Recolectar mediciones de cada serie
 	for _, serie := range series {
 		mediciones, err := me.consultarRangoSerie(serie, tiempoInicio, tiempoFin)
 		if err != nil {
-			continue // Ignorar series sin datos
+			continue // Ignorar series con error
 		}
-		todasMediciones = append(todasMediciones, mediciones...)
+
+		// Solo agregar la serie si tiene mediciones
+		if len(mediciones) == 0 {
+			continue
+		}
+
+		// Inicializar mapa para esta serie
+		if medicionesPorSerie[serie.Path] == nil {
+			medicionesPorSerie[serie.Path] = make(map[int64]interface{})
+		}
+
+		// Almacenar cada medición
+		for _, m := range mediciones {
+			medicionesPorSerie[serie.Path][m.Tiempo] = m.Valor
+			timestampsUnicos[m.Tiempo] = struct{}{}
+		}
 	}
 
-	return todasMediciones, nil
+	// Construir resultado tabular
+	return construirResultadoTabular(medicionesPorSerie, timestampsUnicos), nil
+}
+
+// construirResultadoTabular convierte las mediciones por serie a formato tabular
+func construirResultadoTabular(medicionesPorSerie map[string]map[int64]interface{}, timestampsUnicos map[int64]struct{}) tipos.ResultadoConsultaRango {
+	// Extraer y ordenar nombres de series alfabéticamente
+	seriesOrdenadas := make([]string, 0, len(medicionesPorSerie))
+	for path := range medicionesPorSerie {
+		seriesOrdenadas = append(seriesOrdenadas, path)
+	}
+	sort.Strings(seriesOrdenadas)
+
+	// Extraer y ordenar timestamps ascendente
+	tiemposOrdenados := make([]int64, 0, len(timestampsUnicos))
+	for t := range timestampsUnicos {
+		tiemposOrdenados = append(tiemposOrdenados, t)
+	}
+	sort.Slice(tiemposOrdenados, func(i, j int) bool {
+		return tiemposOrdenados[i] < tiemposOrdenados[j]
+	})
+
+	// Crear índice de serie -> columna
+	indiceColumna := make(map[string]int)
+	for i, path := range seriesOrdenadas {
+		indiceColumna[path] = i
+	}
+
+	// Construir matriz de valores [fila][columna]
+	numFilas := len(tiemposOrdenados)
+	numColumnas := len(seriesOrdenadas)
+	valores := make([][]interface{}, numFilas)
+
+	for i, tiempo := range tiemposOrdenados {
+		valores[i] = make([]interface{}, numColumnas)
+		for j, path := range seriesOrdenadas {
+			if valorMap, existe := medicionesPorSerie[path]; existe {
+				if valor, tieneValor := valorMap[tiempo]; tieneValor {
+					valores[i][j] = valor
+				}
+				// Si no tiene valor, queda nil (valor por defecto)
+			}
+		}
+	}
+
+	return tipos.ResultadoConsultaRango{
+		Series:  seriesOrdenadas,
+		Tiempos: tiemposOrdenados,
+		Valores: valores,
+	}
 }
 
 // consultarRangoSerie consulta mediciones de una serie específica dentro de un rango de tiempo
@@ -268,130 +342,176 @@ func (me *ManagerEdge) resolverSeries(path string) ([]tipos.Serie, error) {
 //   - Path exacto: "sensor_01/temperatura"
 //   - Patrón con wildcard: "sensor_*/temperatura" o "*/temperatura"
 //
-// Retorna el valor agregado de todas las mediciones en el rango temporal.
+// Retorna un valor agregado por cada serie en formato columnar.
+// Las series sin datos en el rango son excluidas del resultado.
 func (me *ManagerEdge) ConsultarAgregacion(
 	path string,
 	tiempoInicio, tiempoFin time.Time,
 	agregacion tipos.TipoAgregacion,
-) (float64, error) {
-	// Resolver series (path exacto o patrón)
-	series, err := me.resolverSeries(path)
+) (tipos.ResultadoAgregacion, error) {
+	// Usar ConsultarRango para obtener datos en formato tabular
+	resultado, err := me.ConsultarRango(path, tiempoInicio, tiempoFin)
 	if err != nil {
-		return 0, err
+		return tipos.ResultadoAgregacion{}, err
 	}
 
-	// Recolectar todos los valores de todas las series
-	var todosLosValores []float64
+	// Calcular agregación POR COLUMNA (serie)
+	seriesConDatos := make([]string, 0, len(resultado.Series))
+	valoresFinales := make([]float64, 0, len(resultado.Series))
 
-	for _, serie := range series {
-		mediciones, err := me.ConsultarRango(serie.Path, tiempoInicio, tiempoFin)
-		if err != nil {
-			continue // Ignorar series sin datos
-		}
+	for colIdx, nombreSerie := range resultado.Series {
+		var valoresColumna []float64
 
-		for _, medicion := range mediciones {
-			valorFloat, err := convertirAFloat64(medicion.Valor)
-			if err != nil {
-				// Para COUNT, contar cualquier valor como 1
-				if agregacion == tipos.AgregacionCount {
-					valorFloat = 1.0
-				} else {
-					continue // Saltar valores no numéricos para otras agregaciones
+		for filaIdx := range resultado.Tiempos {
+			if v := resultado.Valores[filaIdx][colIdx]; v != nil {
+				valorFloat, err := convertirAFloat64(v)
+				if err != nil {
+					// Para COUNT, contar cualquier valor como 1
+					if agregacion == tipos.AgregacionCount {
+						valorFloat = 1.0
+					} else {
+						continue // Saltar valores no numéricos para otras agregaciones
+					}
 				}
+				valoresColumna = append(valoresColumna, valorFloat)
 			}
-			todosLosValores = append(todosLosValores, valorFloat)
+		}
+
+		if len(valoresColumna) > 0 {
+			valor, err := CalcularAgregacionSimple(valoresColumna, agregacion)
+			if err == nil {
+				seriesConDatos = append(seriesConDatos, nombreSerie)
+				valoresFinales = append(valoresFinales, valor)
+			}
 		}
 	}
 
-	if len(todosLosValores) == 0 {
-		return 0, fmt.Errorf("no hay datos en el rango especificado para: %s", path)
+	if len(seriesConDatos) == 0 {
+		return tipos.ResultadoAgregacion{}, fmt.Errorf("no hay datos en el rango especificado para: %s", path)
 	}
 
-	return CalcularAgregacionSimple(todosLosValores, agregacion)
+	return tipos.ResultadoAgregacion{
+		Series:  seriesConDatos, // Ya ordenadas alfabéticamente por ConsultarRango
+		Valores: valoresFinales,
+	}, nil
 }
 
 // ConsultarAgregacionTemporal calcula agregaciones agrupadas por intervalos de tiempo (downsampling).
-// Retorna un slice con un valor agregado por cada bucket temporal.
+// Retorna una matriz donde cada columna es una serie y cada fila es un bucket temporal.
+// Los valores faltantes (bucket sin datos para una serie) se representan como math.NaN().
 //
 // El parámetro path puede ser:
 //   - Path exacto: "sensor_01/temperatura"
 //   - Patrón con wildcard: "sensor_*/temperatura"
 //
 // Ejemplo: ConsultarAgregacionTemporal("sensor_01/temp", inicio, fin, AgregacionPromedio, time.Hour)
-// retorna el promedio por cada hora en el rango.
+// retorna el promedio por cada hora en el rango para cada serie.
 func (me *ManagerEdge) ConsultarAgregacionTemporal(
 	path string,
 	tiempoInicio, tiempoFin time.Time,
 	agregacion tipos.TipoAgregacion,
 	intervalo time.Duration,
-) ([]tipos.ResultadoAgregacionTemporal, error) {
+) (tipos.ResultadoAgregacionTemporal, error) {
 	if intervalo <= 0 {
-		return nil, fmt.Errorf("el intervalo debe ser mayor a cero")
+		return tipos.ResultadoAgregacionTemporal{}, fmt.Errorf("el intervalo debe ser mayor a cero")
 	}
 
-	// Resolver series (path exacto o patrón)
-	series, err := me.resolverSeries(path)
+	// Usar ConsultarRango para obtener datos en formato tabular
+	resultado, err := me.ConsultarRango(path, tiempoInicio, tiempoFin)
 	if err != nil {
-		return nil, err
+		return tipos.ResultadoAgregacionTemporal{}, err
 	}
 
-	// Recolectar todas las mediciones de todas las series
-	var todasLasMediciones []tipos.Medicion
+	// Si no hay datos, retornar error
+	if len(resultado.Series) == 0 || len(resultado.Tiempos) == 0 {
+		return tipos.ResultadoAgregacionTemporal{}, fmt.Errorf("no hay datos en el rango especificado para: %s", path)
+	}
 
-	for _, serie := range series {
-		mediciones, err := me.ConsultarRango(serie.Path, tiempoInicio, tiempoFin)
-		if err != nil {
+	// Generar buckets temporales
+	buckets := generarBuckets(tiempoInicio.UnixNano(), tiempoFin.UnixNano(), intervalo.Nanoseconds())
+	numBuckets := len(buckets)
+	numSeries := len(resultado.Series)
+
+	// Inicializar acumuladores para cada [bucket][serie]
+	// Usamos slices para acumular valores antes de calcular la agregación
+	acumuladores := make([][][]float64, numBuckets)
+	for b := 0; b < numBuckets; b++ {
+		acumuladores[b] = make([][]float64, numSeries)
+		for s := 0; s < numSeries; s++ {
+			acumuladores[b][s] = make([]float64, 0)
+		}
+	}
+
+	// Distribuir valores en acumuladores
+	intervaloNano := intervalo.Nanoseconds()
+	tiempoInicioNano := tiempoInicio.UnixNano()
+
+	for filaIdx, tiempo := range resultado.Tiempos {
+		bucketIdx := calcularBucketIdx(tiempo, tiempoInicioNano, intervaloNano, numBuckets)
+		if bucketIdx < 0 || bucketIdx >= numBuckets {
 			continue
 		}
-		todasLasMediciones = append(todasLasMediciones, mediciones...)
-	}
 
-	if len(todasLasMediciones) == 0 {
-		return nil, fmt.Errorf("no hay datos en el rango especificado para: %s", path)
-	}
+		for colIdx := 0; colIdx < numSeries; colIdx++ {
+			valor := resultado.Valores[filaIdx][colIdx]
+			if valor == nil {
+				continue
+			}
 
-	// Crear buckets temporales
-	var resultados []tipos.ResultadoAgregacionTemporal
-	bucketInicio := tiempoInicio
-
-	for bucketInicio.Before(tiempoFin) {
-		bucketFin := bucketInicio.Add(intervalo)
-		if bucketFin.After(tiempoFin) {
-			bucketFin = tiempoFin
-		}
-
-		// Filtrar mediciones dentro de este bucket
-		bucketInicioNano := bucketInicio.UnixNano()
-		bucketFinNano := bucketFin.UnixNano()
-
-		var valoresBucket []float64
-		for _, medicion := range todasLasMediciones {
-			if medicion.Tiempo >= bucketInicioNano && medicion.Tiempo < bucketFinNano {
-				valorFloat, err := convertirAFloat64(medicion.Valor)
-				if err != nil {
-					if agregacion == tipos.AgregacionCount {
-						valorFloat = 1.0
-					} else {
-						continue
-					}
+			valorFloat, err := convertirAFloat64(valor)
+			if err != nil {
+				if agregacion == tipos.AgregacionCount {
+					valorFloat = 1.0
+				} else {
+					continue
 				}
-				valoresBucket = append(valoresBucket, valorFloat)
 			}
+			acumuladores[bucketIdx][colIdx] = append(acumuladores[bucketIdx][colIdx], valorFloat)
 		}
-
-		// Calcular agregación para este bucket si tiene datos
-		if len(valoresBucket) > 0 {
-			valor, err := CalcularAgregacionSimple(valoresBucket, agregacion)
-			if err == nil {
-				resultados = append(resultados, tipos.ResultadoAgregacionTemporal{
-					Tiempo: bucketInicio,
-					Valor:  valor,
-				})
-			}
-		}
-
-		bucketInicio = bucketFin
 	}
 
-	return resultados, nil
+	// Calcular agregación y construir matriz de resultados
+	valores := make([][]float64, numBuckets)
+	for b := 0; b < numBuckets; b++ {
+		valores[b] = make([]float64, numSeries)
+		for s := 0; s < numSeries; s++ {
+			if len(acumuladores[b][s]) == 0 {
+				valores[b][s] = math.NaN()
+			} else {
+				valorAgregado, err := CalcularAgregacionSimple(acumuladores[b][s], agregacion)
+				if err != nil {
+					valores[b][s] = math.NaN()
+				} else {
+					valores[b][s] = valorAgregado
+				}
+			}
+		}
+	}
+
+	return tipos.ResultadoAgregacionTemporal{
+		Series:  resultado.Series, // Ya ordenadas alfabéticamente por ConsultarRango
+		Tiempos: buckets,
+		Valores: valores,
+	}, nil
+}
+
+// generarBuckets genera los timestamps de inicio de cada bucket temporal
+func generarBuckets(tiempoInicio, tiempoFin, intervalo int64) []int64 {
+	var buckets []int64
+	for t := tiempoInicio; t < tiempoFin; t += intervalo {
+		buckets = append(buckets, t)
+	}
+	return buckets
+}
+
+// calcularBucketIdx calcula el índice del bucket para un timestamp dado
+func calcularBucketIdx(tiempo, tiempoInicio, intervalo int64, numBuckets int) int {
+	if tiempo < tiempoInicio {
+		return -1
+	}
+	idx := int((tiempo - tiempoInicio) / intervalo)
+	if idx >= numBuckets {
+		return numBuckets - 1 // Último bucket captura valores hasta tiempoFin
+	}
+	return idx
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"sort"
 	"strconv"
@@ -46,7 +47,7 @@ type opcionesInternas struct {
 // clienteEdge define la interfaz para comunicación con nodos edge.
 // Es privada para evitar que usuarios externos inyecten implementaciones.
 type clienteEdge interface {
-	// ConsultarRango consulta mediciones en un rango de tiempo
+	// ConsultarRango consulta mediciones en un rango de tiempo (formato tabular)
 	ConsultarRango(ctx context.Context, direccion string, req tipos.SolicitudConsultaRango) (*tipos.RespuestaConsultaRango, error)
 
 	// ConsultarUltimoPunto consulta el primer o último punto de una serie
@@ -584,8 +585,8 @@ func (m *ManagerDespachador) consultarDatosS3(nodo tipos.Nodo, serie tipos.Serie
 }
 
 // consultarEdgeConTimeout consulta datos al edge con un timeout específico
-// Retorna nil, nil si el edge no está disponible (timeout o error de conexión)
-func (m *ManagerDespachador) consultarEdgeConTimeout(nodo tipos.Nodo, serie string, inicio, fin int64, timeout time.Duration) ([]tipos.Medicion, error) {
+// Retorna resultado vacío y nil si el edge no está disponible (timeout o error de conexión)
+func (m *ManagerDespachador) consultarEdgeConTimeout(nodo tipos.Nodo, serie string, inicio, fin int64, timeout time.Duration) (tipos.ResultadoConsultaRango, error) {
 	solicitud := tipos.SolicitudConsultaRango{
 		Serie:        serie,
 		TiempoInicio: inicio,
@@ -600,61 +601,146 @@ func (m *ManagerDespachador) consultarEdgeConTimeout(nodo tipos.Nodo, serie stri
 	if err != nil {
 		// Timeout o error de conexión no es crítico, el edge puede estar offline
 		log.Printf("Error consultando edge %s (serie: %s): %v", nodo.NodoID, serie, err)
-		return nil, nil
+		return tipos.ResultadoConsultaRango{}, nil
 	}
 
 	if respuesta.Error != "" {
-		return nil, fmt.Errorf("error del edge: %s", respuesta.Error)
+		return tipos.ResultadoConsultaRango{}, fmt.Errorf("error del edge: %s", respuesta.Error)
 	}
 
-	return respuesta.Mediciones, nil
+	return respuesta.Resultado, nil
 }
 
-// combinarResultados combina datos de S3 y edge, priorizando datos del edge en duplicados
-func (m *ManagerDespachador) combinarResultados(datosS3, datosEdge []tipos.Medicion) []tipos.Medicion {
-	if len(datosS3) == 0 && len(datosEdge) == 0 {
-		return []tipos.Medicion{}
-	}
-	if len(datosS3) == 0 {
-		return datosEdge
-	}
-	if len(datosEdge) == 0 {
-		return datosS3
-	}
+// combinarResultadosTabular combina datos de S3 (mediciones) y edge (tabular) en formato tabular.
+// Los datos del edge tienen prioridad en caso de duplicados de timestamp.
+func (m *ManagerDespachador) combinarResultadosTabular(datosS3 []tipos.Medicion, datosEdge tipos.ResultadoConsultaRango, seriePath string) tipos.ResultadoConsultaRango {
+	// Mapa para almacenar valores: timestamp -> valor
+	valoresPorTiempo := make(map[int64]interface{})
+	timestampsUnicos := make(map[int64]struct{})
 
-	// Crear mapa con datos de S3
-	medicionesPorTiempo := make(map[int64]tipos.Medicion)
+	// Primero agregar datos de S3
 	for _, m := range datosS3 {
-		medicionesPorTiempo[m.Tiempo] = m
+		valoresPorTiempo[m.Tiempo] = m.Valor
+		timestampsUnicos[m.Tiempo] = struct{}{}
 	}
 
-	// Sobrescribir con datos del edge (tienen prioridad)
-	for _, m := range datosEdge {
-		medicionesPorTiempo[m.Tiempo] = m
+	// Luego agregar datos del edge (tienen prioridad)
+	// El edge puede tener múltiples series, buscamos la que coincide con seriePath
+	indiceColumna := -1
+	for i, s := range datosEdge.Series {
+		if s == seriePath {
+			indiceColumna = i
+			break
+		}
 	}
 
-	// Convertir mapa a slice ordenado
-	resultado := make([]tipos.Medicion, 0, len(medicionesPorTiempo))
-	for _, m := range medicionesPorTiempo {
-		resultado = append(resultado, m)
+	if indiceColumna >= 0 {
+		for filaIdx, tiempo := range datosEdge.Tiempos {
+			if filaIdx < len(datosEdge.Valores) && indiceColumna < len(datosEdge.Valores[filaIdx]) {
+				valor := datosEdge.Valores[filaIdx][indiceColumna]
+				if valor != nil {
+					valoresPorTiempo[tiempo] = valor
+					timestampsUnicos[tiempo] = struct{}{}
+				}
+			}
+		}
 	}
 
-	// Ordenar por tiempo
-	sort.Slice(resultado, func(i, j int) bool {
-		return resultado[i].Tiempo < resultado[j].Tiempo
+	// Construir resultado tabular para esta serie única
+	tiemposOrdenados := make([]int64, 0, len(timestampsUnicos))
+	for t := range timestampsUnicos {
+		tiemposOrdenados = append(tiemposOrdenados, t)
+	}
+	sort.Slice(tiemposOrdenados, func(i, j int) bool {
+		return tiemposOrdenados[i] < tiemposOrdenados[j]
 	})
 
-	return resultado
+	// Crear matriz de valores (una sola columna para esta serie)
+	valores := make([][]interface{}, len(tiemposOrdenados))
+	for i, tiempo := range tiemposOrdenados {
+		valores[i] = []interface{}{valoresPorTiempo[tiempo]}
+	}
+
+	return tipos.ResultadoConsultaRango{
+		Series:  []string{seriePath},
+		Tiempos: tiemposOrdenados,
+		Valores: valores,
+	}
+}
+
+// combinarResultadosTabulares combina múltiples resultados tabulares en uno solo.
+// Las series se ordenan alfabéticamente, los timestamps se unifican y ordenan ascendente.
+func (m *ManagerDespachador) combinarResultadosTabulares(resultados []tipos.ResultadoConsultaRango) tipos.ResultadoConsultaRango {
+	if len(resultados) == 0 {
+		return tipos.ResultadoConsultaRango{}
+	}
+
+	// Recolectar todos los datos: serie -> timestamp -> valor
+	datosPorSerie := make(map[string]map[int64]interface{})
+	timestampsUnicos := make(map[int64]struct{})
+
+	for _, res := range resultados {
+		for colIdx, seriePath := range res.Series {
+			if datosPorSerie[seriePath] == nil {
+				datosPorSerie[seriePath] = make(map[int64]interface{})
+			}
+			for filaIdx, tiempo := range res.Tiempos {
+				if filaIdx < len(res.Valores) && colIdx < len(res.Valores[filaIdx]) {
+					valor := res.Valores[filaIdx][colIdx]
+					if valor != nil {
+						datosPorSerie[seriePath][tiempo] = valor
+						timestampsUnicos[tiempo] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+
+	// Extraer y ordenar series alfabéticamente
+	seriesOrdenadas := make([]string, 0, len(datosPorSerie))
+	for path := range datosPorSerie {
+		seriesOrdenadas = append(seriesOrdenadas, path)
+	}
+	sort.Strings(seriesOrdenadas)
+
+	// Extraer y ordenar timestamps
+	tiemposOrdenados := make([]int64, 0, len(timestampsUnicos))
+	for t := range timestampsUnicos {
+		tiemposOrdenados = append(tiemposOrdenados, t)
+	}
+	sort.Slice(tiemposOrdenados, func(i, j int) bool {
+		return tiemposOrdenados[i] < tiemposOrdenados[j]
+	})
+
+	// Construir matriz de valores
+	valores := make([][]interface{}, len(tiemposOrdenados))
+	for i, tiempo := range tiemposOrdenados {
+		valores[i] = make([]interface{}, len(seriesOrdenadas))
+		for j, path := range seriesOrdenadas {
+			if valoresSerie, existe := datosPorSerie[path]; existe {
+				if valor, tieneValor := valoresSerie[tiempo]; tieneValor {
+					valores[i][j] = valor
+				}
+			}
+		}
+	}
+
+	return tipos.ResultadoConsultaRango{
+		Series:  seriesOrdenadas,
+		Tiempos: tiemposOrdenados,
+		Valores: valores,
+	}
 }
 
 // ConsultarRango consulta datos combinando S3 (histórico) y edge (reciente).
 // Esta función funciona incluso si el edge está offline (corte de luz/internet).
 // Soporta wildcards en el path de la serie (ej: */temp, sensor_01/*).
-func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, tiempoFin time.Time) ([]tipos.Medicion, error) {
+// Retorna resultado en formato tabular.
+func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, tiempoFin time.Time) (tipos.ResultadoConsultaRango, error) {
 	// Buscar todas las series que coincidan (path exacto o wildcard)
 	seriesEncontradas, err := m.buscarSeriesPorPath(nombreSerie)
 	if err != nil {
-		return nil, err
+		return tipos.ResultadoConsultaRango{}, err
 	}
 
 	inicio := tiempoInicio.UnixNano()
@@ -662,17 +748,18 @@ func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, ti
 
 	// Canal para recoger resultados de todas las consultas
 	type resultadoSerie struct {
-		mediciones []tipos.Medicion
-		errS3      error
-		errEdge    error
-		path       string
+		resultado tipos.ResultadoConsultaRango
+		errS3     error
+		errEdge   error
+		path      string
 	}
 	resultados := make(chan resultadoSerie, len(seriesEncontradas))
 
 	// Consultar cada serie en paralelo (S3 + edge)
 	for _, sn := range seriesEncontradas {
 		go func(sn serieConNodo) {
-			var datosS3, datosEdge []tipos.Medicion
+			var datosS3 []tipos.Medicion
+			var datosEdge tipos.ResultadoConsultaRango
 			var errS3, errEdge error
 
 			// Consultar S3
@@ -682,16 +769,16 @@ func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, ti
 			datosEdge, errEdge = m.consultarEdgeConTimeout(sn.nodo, sn.path, inicio, fin, 5*time.Second)
 
 			resultados <- resultadoSerie{
-				mediciones: m.combinarResultados(datosS3, datosEdge),
-				errS3:      errS3,
-				errEdge:    errEdge,
-				path:       sn.path,
+				resultado: m.combinarResultadosTabular(datosS3, datosEdge, sn.path),
+				errS3:     errS3,
+				errEdge:   errEdge,
+				path:      sn.path,
 			}
 		}(sn)
 	}
 
-	// Recoger todos los resultados y combinar mediciones
-	var todasMediciones []tipos.Medicion
+	// Recoger todos los resultados
+	var todosResultados []tipos.ResultadoConsultaRango
 	var erroresS3 []string
 
 	for i := 0; i < len(seriesEncontradas); i++ {
@@ -707,16 +794,19 @@ func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, ti
 			log.Printf("Advertencia: error consultando edge para serie %s: %v", res.path, res.errEdge)
 		}
 
-		// Agregar mediciones al conjunto total
-		todasMediciones = append(todasMediciones, res.mediciones...)
+		// Agregar resultado si tiene datos
+		if len(res.resultado.Series) > 0 {
+			todosResultados = append(todosResultados, res.resultado)
+		}
 	}
 
 	// Si hubo errores de S3 en todas las series, reportar
 	if len(erroresS3) == len(seriesEncontradas) {
-		return nil, fmt.Errorf("error consultando S3: %v", erroresS3)
+		return tipos.ResultadoConsultaRango{}, fmt.Errorf("error consultando S3: %v", erroresS3)
 	}
 
-	return todasMediciones, nil
+	// Combinar todos los resultados en formato tabular final
+	return m.combinarResultadosTabulares(todosResultados), nil
 }
 
 // ConsultarUltimoPunto busca el último punto combinando S3 y edge.
@@ -842,21 +932,6 @@ func calcularAgregacionSimple(valores []float64, agregacion tipos.TipoAgregacion
 	}
 }
 
-// convertirMedicionesAFloat64 extrae los valores de las mediciones y los convierte a float64
-func convertirMedicionesAFloat64(mediciones []tipos.Medicion) []float64 {
-	valores := make([]float64, 0, len(mediciones))
-	for _, m := range mediciones {
-		switch v := m.Valor.(type) {
-		case float64:
-			valores = append(valores, v)
-		case int64:
-			valores = append(valores, float64(v))
-		}
-		// Otros tipos (bool, string) se ignoran para agregaciones numéricas
-	}
-	return valores
-}
-
 // ============================================================================
 // HELPERS PARA BÚSQUEDA DE SERIES
 // ============================================================================
@@ -915,233 +990,174 @@ func (m *ManagerDespachador) buscarSeriesPorPath(path string) ([]serieConNodo, e
 // ConsultarAgregacion calcula una agregación simple combinando datos de S3 y edge.
 // Soporta tipos de agregación: promedio, maximo, minimo, suma, count.
 // Soporta wildcards en el path de la serie (ej: */temp, sensor_01/*).
+// Retorna un valor agregado por cada serie en formato columnar.
 func (m *ManagerDespachador) ConsultarAgregacion(
 	nombreSerie string,
 	tiempoInicio, tiempoFin time.Time,
 	agregacion tipos.TipoAgregacion,
-) (float64, error) {
-	// Buscar todas las series que coincidan (path exacto o wildcard)
-	seriesEncontradas, err := m.buscarSeriesPorPath(nombreSerie)
+) (tipos.ResultadoAgregacion, error) {
+	// Usar ConsultarRango para obtener datos combinados
+	resultado, err := m.ConsultarRango(nombreSerie, tiempoInicio, tiempoFin)
 	if err != nil {
-		return 0, err
+		return tipos.ResultadoAgregacion{}, err
 	}
 
-	inicio := tiempoInicio.UnixNano()
-	fin := tiempoFin.UnixNano()
+	// Calcular agregación POR COLUMNA (serie)
+	seriesConDatos := make([]string, 0, len(resultado.Series))
+	valoresFinales := make([]float64, 0, len(resultado.Series))
 
-	// Canal para recoger resultados de todas las consultas
-	type resultadoSerie struct {
-		mediciones []tipos.Medicion
-		errS3      error
-		errEdge    error
-		path       string
-	}
-	resultados := make(chan resultadoSerie, len(seriesEncontradas))
+	for colIdx, nombreSerie := range resultado.Series {
+		var valoresColumna []float64
 
-	// Consultar cada serie en paralelo (S3 + edge)
-	for _, sn := range seriesEncontradas {
-		go func(sn serieConNodo) {
-			var datosS3, datosEdge []tipos.Medicion
-			var errS3, errEdge error
-
-			// Consultar S3
-			datosS3, errS3 = m.consultarDatosS3(sn.nodo, sn.serie, inicio, fin)
-
-			// Consultar edge
-			datosEdge, errEdge = m.consultarEdgeConTimeout(sn.nodo, sn.path, inicio, fin, 5*time.Second)
-
-			resultados <- resultadoSerie{
-				mediciones: m.combinarResultados(datosS3, datosEdge),
-				errS3:      errS3,
-				errEdge:    errEdge,
-				path:       sn.path,
+		for filaIdx := range resultado.Tiempos {
+			if v := resultado.Valores[filaIdx][colIdx]; v != nil {
+				switch val := v.(type) {
+				case float64:
+					valoresColumna = append(valoresColumna, val)
+				case int64:
+					valoresColumna = append(valoresColumna, float64(val))
+				default:
+					// Para COUNT, contar cualquier valor como 1
+					if agregacion == tipos.AgregacionCount {
+						valoresColumna = append(valoresColumna, 1.0)
+					}
+				}
 			}
-		}(sn)
-	}
-
-	// Recoger todos los resultados y combinar valores
-	var todosValores []float64
-	var erroresS3 []string
-
-	for i := 0; i < len(seriesEncontradas); i++ {
-		res := <-resultados
-
-		// Registrar errores de S3 (críticos)
-		if res.errS3 != nil {
-			erroresS3 = append(erroresS3, fmt.Sprintf("%s: %v", res.path, res.errS3))
 		}
 
-		// Los errores de edge solo se loguean (el edge puede estar offline)
-		if res.errEdge != nil {
-			log.Printf("Advertencia: error consultando edge para serie %s: %v", res.path, res.errEdge)
+		if len(valoresColumna) > 0 {
+			valor, err := calcularAgregacionSimple(valoresColumna, agregacion)
+			if err == nil {
+				seriesConDatos = append(seriesConDatos, nombreSerie)
+				valoresFinales = append(valoresFinales, valor)
+			}
 		}
-
-		// Extraer valores de las mediciones
-		valores := convertirMedicionesAFloat64(res.mediciones)
-		todosValores = append(todosValores, valores...)
 	}
 
-	// Si hubo errores de S3 en todas las series, reportar
-	if len(erroresS3) == len(seriesEncontradas) {
-		return 0, fmt.Errorf("error consultando S3: %v", erroresS3)
+	if len(seriesConDatos) == 0 {
+		return tipos.ResultadoAgregacion{}, fmt.Errorf("no se encontraron datos para %s en el rango especificado", nombreSerie)
 	}
 
-	if len(todosValores) == 0 {
-		return 0, fmt.Errorf("no se encontraron datos para la serie %s en el rango especificado", nombreSerie)
-	}
-
-	return calcularAgregacionSimple(todosValores, agregacion)
+	return tipos.ResultadoAgregacion{
+		Series:  seriesConDatos, // Ya ordenadas alfabéticamente por ConsultarRango
+		Valores: valoresFinales,
+	}, nil
 }
 
 // ConsultarAgregacionTemporal calcula agregaciones agrupadas por intervalos de tiempo (downsampling).
 // Combina datos de S3 y edge, luego agrupa por intervalos del tamaño especificado.
 // Soporta wildcards en el path de la serie (ej: */temp, sensor_01/*).
+// Retorna una matriz donde cada columna es una serie y cada fila es un bucket temporal.
+// Los valores faltantes (bucket sin datos para una serie) se representan como math.NaN().
 func (m *ManagerDespachador) ConsultarAgregacionTemporal(
 	nombreSerie string,
 	tiempoInicio, tiempoFin time.Time,
 	agregacion tipos.TipoAgregacion,
 	intervalo time.Duration,
-) ([]tipos.ResultadoAgregacionTemporal, error) {
+) (tipos.ResultadoAgregacionTemporal, error) {
 	if intervalo <= 0 {
-		return nil, fmt.Errorf("intervalo debe ser mayor a cero")
+		return tipos.ResultadoAgregacionTemporal{}, fmt.Errorf("intervalo debe ser mayor a cero")
 	}
 
-	// Buscar todas las series que coincidan (path exacto o wildcard)
-	seriesEncontradas, err := m.buscarSeriesPorPath(nombreSerie)
+	// Usar ConsultarRango para obtener datos combinados
+	resultado, err := m.ConsultarRango(nombreSerie, tiempoInicio, tiempoFin)
 	if err != nil {
-		return nil, err
+		return tipos.ResultadoAgregacionTemporal{}, err
 	}
 
-	inicio := tiempoInicio.UnixNano()
-	fin := tiempoFin.UnixNano()
-
-	// Canal para recoger resultados de todas las consultas
-	type resultadoSerie struct {
-		mediciones []tipos.Medicion
-		errS3      error
-		errEdge    error
-		path       string
+	if len(resultado.Series) == 0 || len(resultado.Tiempos) == 0 {
+		return tipos.ResultadoAgregacionTemporal{}, fmt.Errorf("no se encontraron datos para la serie %s en el rango especificado", nombreSerie)
 	}
-	resultados := make(chan resultadoSerie, len(seriesEncontradas))
 
-	// Consultar cada serie en paralelo (S3 + edge)
-	for _, sn := range seriesEncontradas {
-		go func(sn serieConNodo) {
-			var datosS3, datosEdge []tipos.Medicion
-			var errS3, errEdge error
+	// Generar buckets temporales
+	buckets := generarBuckets(tiempoInicio.UnixNano(), tiempoFin.UnixNano(), intervalo.Nanoseconds())
+	numBuckets := len(buckets)
+	numSeries := len(resultado.Series)
 
-			// Consultar S3
-			datosS3, errS3 = m.consultarDatosS3(sn.nodo, sn.serie, inicio, fin)
+	// Inicializar acumuladores para cada [bucket][serie]
+	acumuladores := make([][][]float64, numBuckets)
+	for b := 0; b < numBuckets; b++ {
+		acumuladores[b] = make([][]float64, numSeries)
+		for s := 0; s < numSeries; s++ {
+			acumuladores[b][s] = make([]float64, 0)
+		}
+	}
 
-			// Consultar edge
-			datosEdge, errEdge = m.consultarEdgeConTimeout(sn.nodo, sn.path, inicio, fin, 5*time.Second)
+	// Distribuir valores en acumuladores
+	intervaloNano := intervalo.Nanoseconds()
+	tiempoInicioNano := tiempoInicio.UnixNano()
 
-			resultados <- resultadoSerie{
-				mediciones: m.combinarResultados(datosS3, datosEdge),
-				errS3:      errS3,
-				errEdge:    errEdge,
-				path:       sn.path,
+	for filaIdx, tiempo := range resultado.Tiempos {
+		bucketIdx := calcularBucketIdx(tiempo, tiempoInicioNano, intervaloNano, numBuckets)
+		if bucketIdx < 0 || bucketIdx >= numBuckets {
+			continue
+		}
+
+		for colIdx := 0; colIdx < numSeries; colIdx++ {
+			valor := resultado.Valores[filaIdx][colIdx]
+			if valor == nil {
+				continue
 			}
-		}(sn)
-	}
 
-	// Recoger todos los resultados y combinar mediciones
-	var todasMediciones []tipos.Medicion
-	var erroresS3 []string
-
-	for i := 0; i < len(seriesEncontradas); i++ {
-		res := <-resultados
-
-		// Registrar errores de S3 (críticos)
-		if res.errS3 != nil {
-			erroresS3 = append(erroresS3, fmt.Sprintf("%s: %v", res.path, res.errS3))
+			var valorFloat float64
+			switch v := valor.(type) {
+			case float64:
+				valorFloat = v
+			case int64:
+				valorFloat = float64(v)
+			default:
+				if agregacion == tipos.AgregacionCount {
+					valorFloat = 1.0
+				} else {
+					continue
+				}
+			}
+			acumuladores[bucketIdx][colIdx] = append(acumuladores[bucketIdx][colIdx], valorFloat)
 		}
+	}
 
-		// Los errores de edge solo se loguean (el edge puede estar offline)
-		if res.errEdge != nil {
-			log.Printf("Advertencia: error consultando edge para serie %s: %v", res.path, res.errEdge)
+	// Calcular agregación y construir matriz de resultados
+	valores := make([][]float64, numBuckets)
+	for b := 0; b < numBuckets; b++ {
+		valores[b] = make([]float64, numSeries)
+		for s := 0; s < numSeries; s++ {
+			if len(acumuladores[b][s]) == 0 {
+				valores[b][s] = math.NaN()
+			} else {
+				valorAgregado, err := calcularAgregacionSimple(acumuladores[b][s], agregacion)
+				if err != nil {
+					valores[b][s] = math.NaN()
+				} else {
+					valores[b][s] = valorAgregado
+				}
+			}
 		}
-
-		// Agregar mediciones al conjunto total
-		todasMediciones = append(todasMediciones, res.mediciones...)
 	}
 
-	// Si hubo errores de S3 en todas las series, reportar
-	if len(erroresS3) == len(seriesEncontradas) {
-		return nil, fmt.Errorf("error consultando S3: %v", erroresS3)
-	}
-
-	if len(todasMediciones) == 0 {
-		return nil, fmt.Errorf("no se encontraron datos para la serie %s en el rango especificado", nombreSerie)
-	}
-
-	// Usar función helper para agrupar y calcular
-	return m.agruparYCalcularAgregacion(todasMediciones, tiempoInicio, agregacion, intervalo, nombreSerie)
+	return tipos.ResultadoAgregacionTemporal{
+		Series:  resultado.Series, // Ya ordenadas alfabéticamente por ConsultarRango
+		Tiempos: buckets,
+		Valores: valores,
+	}, nil
 }
 
-// agruparYCalcularAgregacion agrupa mediciones por buckets temporales y calcula la agregación.
-// Función helper reutilizada por consultas normales y wildcards.
-func (m *ManagerDespachador) agruparYCalcularAgregacion(
-	mediciones []tipos.Medicion,
-	tiempoInicio time.Time,
-	agregacion tipos.TipoAgregacion,
-	intervalo time.Duration,
-	nombreSerie string, // Para mensajes de error
-) ([]tipos.ResultadoAgregacionTemporal, error) {
-	// Agrupar mediciones por buckets temporales
-	buckets := make(map[int64][]float64)
-	intervaloNanos := intervalo.Nanoseconds()
-
-	for _, med := range mediciones {
-		// Calcular bucket al que pertenece esta medición
-		bucketInicio := tiempoInicio.UnixNano() + ((med.Tiempo-tiempoInicio.UnixNano())/intervaloNanos)*intervaloNanos
-
-		// Convertir valor a float64
-		var valorFloat float64
-		switch v := med.Valor.(type) {
-		case float64:
-			valorFloat = v
-		case int64:
-			valorFloat = float64(v)
-		default:
-			continue // Ignorar valores no numéricos
-		}
-
-		buckets[bucketInicio] = append(buckets[bucketInicio], valorFloat)
+// generarBuckets genera los timestamps de inicio de cada bucket temporal
+func generarBuckets(tiempoInicio, tiempoFin, intervalo int64) []int64 {
+	var buckets []int64
+	for t := tiempoInicio; t < tiempoFin; t += intervalo {
+		buckets = append(buckets, t)
 	}
+	return buckets
+}
 
-	// Calcular agregación para cada bucket
-	var resultadosAgregacion []tipos.ResultadoAgregacionTemporal
-
-	// Ordenar buckets por tiempo
-	var bucketKeys []int64
-	for k := range buckets {
-		bucketKeys = append(bucketKeys, k)
+// calcularBucketIdx calcula el índice del bucket para un timestamp dado
+func calcularBucketIdx(tiempo, tiempoInicio, intervalo int64, numBuckets int) int {
+	if tiempo < tiempoInicio {
+		return -1
 	}
-	sort.Slice(bucketKeys, func(i, j int) bool {
-		return bucketKeys[i] < bucketKeys[j]
-	})
-
-	for _, bucketInicio := range bucketKeys {
-		valores := buckets[bucketInicio]
-		if len(valores) == 0 {
-			continue
-		}
-
-		valorAgregado, err := calcularAgregacionSimple(valores, agregacion)
-		if err != nil {
-			continue
-		}
-
-		resultadosAgregacion = append(resultadosAgregacion, tipos.ResultadoAgregacionTemporal{
-			Tiempo: time.Unix(0, bucketInicio),
-			Valor:  valorAgregado,
-		})
+	idx := int((tiempo - tiempoInicio) / intervalo)
+	if idx >= numBuckets {
+		return numBuckets - 1 // Último bucket captura valores hasta tiempoFin
 	}
-
-	if len(resultadosAgregacion) == 0 {
-		return nil, fmt.Errorf("no hay valores numéricos para agregar en la serie %s", nombreSerie)
-	}
-
-	return resultadosAgregacion, nil
+	return idx
 }

@@ -61,6 +61,31 @@ func (m *mockClienteEdge) ConsultarAgregacionTemporal(ctx context.Context, direc
 	return m.respuestaAgregacionTemporal, nil
 }
 
+// crearRespuestaRangoTabular es un helper para crear respuestas en formato tabular
+// a partir de una lista de mediciones y el path de la serie
+func crearRespuestaRangoTabular(seriePath string, mediciones []tipos.Medicion) *tipos.RespuestaConsultaRango {
+	if len(mediciones) == 0 {
+		return &tipos.RespuestaConsultaRango{
+			Resultado: tipos.ResultadoConsultaRango{},
+		}
+	}
+
+	tiempos := make([]int64, len(mediciones))
+	valores := make([][]interface{}, len(mediciones))
+	for i, m := range mediciones {
+		tiempos[i] = m.Tiempo
+		valores[i] = []interface{}{m.Valor}
+	}
+
+	return &tipos.RespuestaConsultaRango{
+		Resultado: tipos.ResultadoConsultaRango{
+			Series:  []string{seriePath},
+			Tiempos: tiempos,
+			Valores: valores,
+		},
+	}
+}
+
 // ============================================================================
 // MOCK DE CLIENTE S3 PARA TESTS
 // ============================================================================
@@ -149,125 +174,120 @@ func TestObtenerDireccionEdge(t *testing.T) {
 }
 
 // ============================================================================
-// TESTS DE COMBINAR RESULTADOS
+// TESTS DE COMBINAR RESULTADOS TABULARES
 // ============================================================================
 
-// TestCombinarResultados_AmbosVacios verifica comportamiento con ambas listas vacias
-func TestCombinarResultados_AmbosVacios(t *testing.T) {
+// TestCombinarResultadosTabulares_Vacio verifica comportamiento con lista vacía
+func TestCombinarResultadosTabulares_Vacio(t *testing.T) {
 	m := &ManagerDespachador{}
 
-	resultado := m.combinarResultados([]tipos.Medicion{}, []tipos.Medicion{})
+	resultado := m.combinarResultadosTabulares([]tipos.ResultadoConsultaRango{})
 
-	assert.Empty(t, resultado)
-	t.Log("combinarResultados retorna vacio cuando ambas fuentes estan vacias")
+	assert.Empty(t, resultado.Series)
+	assert.Empty(t, resultado.Tiempos)
+	assert.Empty(t, resultado.Valores)
+	t.Log("combinarResultadosTabulares retorna vacío cuando no hay resultados")
 }
 
-// TestCombinarResultados_SoloS3 verifica cuando solo hay datos de S3
-func TestCombinarResultados_SoloS3(t *testing.T) {
+// TestCombinarResultadosTabulares_UnaFuente verifica con una sola fuente de datos
+func TestCombinarResultadosTabulares_UnaFuente(t *testing.T) {
+	m := &ManagerDespachador{}
+
+	entrada := []tipos.ResultadoConsultaRango{
+		{
+			Series:  []string{"/sensores/temp"},
+			Tiempos: []int64{1000, 2000, 3000},
+			Valores: [][]interface{}{{10.0}, {20.0}, {30.0}},
+		},
+	}
+
+	resultado := m.combinarResultadosTabulares(entrada)
+
+	assert.Equal(t, []string{"/sensores/temp"}, resultado.Series)
+	assert.Equal(t, []int64{1000, 2000, 3000}, resultado.Tiempos)
+	assert.Len(t, resultado.Valores, 3)
+	t.Log("combinarResultadosTabulares retorna datos cuando hay una sola fuente")
+}
+
+// TestCombinarResultadosTabulares_MultiplesSeriesSinSolapamiento verifica combinación sin solapamiento
+func TestCombinarResultadosTabulares_MultiplesSeriesSinSolapamiento(t *testing.T) {
+	m := &ManagerDespachador{}
+
+	entrada := []tipos.ResultadoConsultaRango{
+		{
+			Series:  []string{"/sensores/temp"},
+			Tiempos: []int64{1000, 2000},
+			Valores: [][]interface{}{{10.0}, {20.0}},
+		},
+		{
+			Series:  []string{"/sensores/humedad"},
+			Tiempos: []int64{3000, 4000},
+			Valores: [][]interface{}{{50.0}, {60.0}},
+		},
+	}
+
+	resultado := m.combinarResultadosTabulares(entrada)
+
+	// Series ordenadas alfabéticamente
+	assert.Equal(t, []string{"/sensores/humedad", "/sensores/temp"}, resultado.Series)
+	// Timestamps combinados y ordenados
+	assert.Equal(t, []int64{1000, 2000, 3000, 4000}, resultado.Tiempos)
+	// Verificar matriz de valores con nils donde no hay datos
+	assert.Len(t, resultado.Valores, 4)
+	t.Log("combinarResultadosTabulares combina series sin solapamiento correctamente")
+}
+
+// TestCombinarResultadosTabulares_ConSolapamientoTiempos verifica combinación con timestamps comunes
+func TestCombinarResultadosTabulares_ConSolapamientoTiempos(t *testing.T) {
+	m := &ManagerDespachador{}
+
+	entrada := []tipos.ResultadoConsultaRango{
+		{
+			Series:  []string{"/sensores/temp"},
+			Tiempos: []int64{1000, 2000},
+			Valores: [][]interface{}{{10.0}, {20.0}},
+		},
+		{
+			Series:  []string{"/sensores/humedad"},
+			Tiempos: []int64{2000, 3000},
+			Valores: [][]interface{}{{50.0}, {60.0}},
+		},
+	}
+
+	resultado := m.combinarResultadosTabulares(entrada)
+
+	// Series ordenadas alfabéticamente
+	assert.Equal(t, []string{"/sensores/humedad", "/sensores/temp"}, resultado.Series)
+	// Timestamps únicos y ordenados
+	assert.Equal(t, []int64{1000, 2000, 3000}, resultado.Tiempos)
+	// Verificar que timestamp 2000 tiene valores de ambas series
+	assert.Len(t, resultado.Valores, 3)
+	t.Log("combinarResultadosTabulares maneja timestamps solapados correctamente")
+}
+
+// TestCombinarResultadosTabular_S3YEdge verifica combinación de S3 con datos tabulares del edge
+func TestCombinarResultadosTabular_S3YEdge(t *testing.T) {
 	m := &ManagerDespachador{}
 
 	datosS3 := []tipos.Medicion{
 		{Tiempo: 1000, Valor: 10.0},
 		{Tiempo: 2000, Valor: 20.0},
-		{Tiempo: 3000, Valor: 30.0},
 	}
 
-	resultado := m.combinarResultados(datosS3, []tipos.Medicion{})
-
-	assert.Len(t, resultado, 3)
-	assert.Equal(t, datosS3, resultado)
-	t.Log("combinarResultados retorna datos de S3 cuando edge esta vacio")
-}
-
-// TestCombinarResultados_SoloEdge verifica cuando solo hay datos del edge
-func TestCombinarResultados_SoloEdge(t *testing.T) {
-	m := &ManagerDespachador{}
-
-	datosEdge := []tipos.Medicion{
-		{Tiempo: 1000, Valor: 10.0},
-		{Tiempo: 2000, Valor: 20.0},
+	datosEdge := tipos.ResultadoConsultaRango{
+		Series:  []string{"/sensores/temp"},
+		Tiempos: []int64{2000, 3000},
+		Valores: [][]interface{}{{25.0}, {30.0}},
 	}
 
-	resultado := m.combinarResultados([]tipos.Medicion{}, datosEdge)
+	resultado := m.combinarResultadosTabular(datosS3, datosEdge, "/sensores/temp")
 
-	assert.Len(t, resultado, 2)
-	assert.Equal(t, datosEdge, resultado)
-	t.Log("combinarResultados retorna datos de edge cuando S3 esta vacio")
-}
-
-// TestCombinarResultados_SinDuplicados verifica combinacion sin tiempos duplicados
-func TestCombinarResultados_SinDuplicados(t *testing.T) {
-	m := &ManagerDespachador{}
-
-	datosS3 := []tipos.Medicion{
-		{Tiempo: 1000, Valor: 10.0},
-		{Tiempo: 2000, Valor: 20.0},
-	}
-	datosEdge := []tipos.Medicion{
-		{Tiempo: 3000, Valor: 30.0},
-		{Tiempo: 4000, Valor: 40.0},
-	}
-
-	resultado := m.combinarResultados(datosS3, datosEdge)
-
-	assert.Len(t, resultado, 4)
-	// Verificar orden por tiempo
-	assert.Equal(t, int64(1000), resultado[0].Tiempo)
-	assert.Equal(t, int64(2000), resultado[1].Tiempo)
-	assert.Equal(t, int64(3000), resultado[2].Tiempo)
-	assert.Equal(t, int64(4000), resultado[3].Tiempo)
-	t.Log("combinarResultados combina correctamente sin duplicados")
-}
-
-// TestCombinarResultados_ConDuplicados verifica que edge tiene prioridad en duplicados
-func TestCombinarResultados_ConDuplicados(t *testing.T) {
-	m := &ManagerDespachador{}
-
-	datosS3 := []tipos.Medicion{
-		{Tiempo: 1000, Valor: 10.0},
-		{Tiempo: 2000, Valor: 20.0}, // Este sera sobrescrito
-		{Tiempo: 3000, Valor: 30.0},
-	}
-	datosEdge := []tipos.Medicion{
-		{Tiempo: 2000, Valor: 25.0}, // Sobrescribe el de S3
-		{Tiempo: 4000, Valor: 40.0},
-	}
-
-	resultado := m.combinarResultados(datosS3, datosEdge)
-
-	assert.Len(t, resultado, 4)
-	// Verificar que el tiempo 2000 tiene el valor del edge (25.0)
-	for _, med := range resultado {
-		if med.Tiempo == 2000 {
-			assert.Equal(t, 25.0, med.Valor, "Edge debe tener prioridad sobre S3")
-		}
-	}
-	t.Log("combinarResultados prioriza datos del edge en duplicados")
-}
-
-// TestCombinarResultados_OrdenCorrecto verifica que el resultado esta ordenado por tiempo
-func TestCombinarResultados_OrdenCorrecto(t *testing.T) {
-	m := &ManagerDespachador{}
-
-	// Datos desordenados
-	datosS3 := []tipos.Medicion{
-		{Tiempo: 5000, Valor: 50.0},
-		{Tiempo: 1000, Valor: 10.0},
-	}
-	datosEdge := []tipos.Medicion{
-		{Tiempo: 4000, Valor: 40.0},
-		{Tiempo: 2000, Valor: 20.0},
-	}
-
-	resultado := m.combinarResultados(datosS3, datosEdge)
-
-	assert.Len(t, resultado, 4)
-	// Verificar orden ascendente por tiempo
-	for i := 1; i < len(resultado); i++ {
-		assert.True(t, resultado[i].Tiempo > resultado[i-1].Tiempo,
-			"Mediciones deben estar ordenadas por tiempo")
-	}
-	t.Log("combinarResultados ordena resultados por tiempo")
+	assert.Equal(t, []string{"/sensores/temp"}, resultado.Series)
+	assert.Equal(t, []int64{1000, 2000, 3000}, resultado.Tiempos)
+	// Verificar que el edge tiene prioridad en timestamp 2000
+	// Fila 1 (tiempo 2000) debe tener valor 25.0 del edge, no 20.0 de S3
+	assert.Equal(t, 25.0, resultado.Valores[1][0])
+	t.Log("combinarResultadosTabular prioriza datos del edge sobre S3")
 }
 
 // ============================================================================
@@ -677,16 +697,16 @@ func TestConsultarUltimoPuntoEdge_TipoPrimero(t *testing.T) {
 
 // TestConsultarEdgeConTimeout_Exitoso verifica consulta exitosa de rango
 func TestConsultarEdgeConTimeout_Exitoso(t *testing.T) {
-	medicionesEsperadas := []tipos.Medicion{
-		{Tiempo: 1000, Valor: 10.0},
-		{Tiempo: 2000, Valor: 20.0},
-		{Tiempo: 3000, Valor: 30.0},
+	resultadoEsperado := tipos.ResultadoConsultaRango{
+		Series:  []string{"/sensores/temp"},
+		Tiempos: []int64{1000, 2000, 3000},
+		Valores: [][]interface{}{{10.0}, {20.0}, {30.0}},
 	}
 
 	mockEdge := &mockClienteEdge{
 		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: medicionesEsperadas,
-			Error:      "",
+			Resultado: resultadoEsperado,
+			Error:     "",
 		},
 	}
 
@@ -700,20 +720,20 @@ func TestConsultarEdgeConTimeout_Exitoso(t *testing.T) {
 		PuertoHTTP:  "8080",
 	}
 
-	mediciones, err := m.consultarEdgeConTimeout(nodo, "/sensores/temp", 1000, 3000, 5*time.Second)
+	resultado, err := m.consultarEdgeConTimeout(nodo, "/sensores/temp", 1000, 3000, 5*time.Second)
 
 	assert.NoError(t, err)
-	assert.Len(t, mediciones, 3)
-	assert.Equal(t, medicionesEsperadas, mediciones)
-	t.Log("consultarEdgeConTimeout retorna mediciones correctamente")
+	assert.Len(t, resultado.Tiempos, 3)
+	assert.Equal(t, []string{"/sensores/temp"}, resultado.Series)
+	t.Log("consultarEdgeConTimeout retorna resultado tabular correctamente")
 }
 
 // TestConsultarEdgeConTimeout_SinDatos verifica respuesta vacia
 func TestConsultarEdgeConTimeout_SinDatos(t *testing.T) {
 	mockEdge := &mockClienteEdge{
 		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: []tipos.Medicion{},
-			Error:      "",
+			Resultado: tipos.ResultadoConsultaRango{},
+			Error:     "",
 		},
 	}
 
@@ -727,14 +747,14 @@ func TestConsultarEdgeConTimeout_SinDatos(t *testing.T) {
 		PuertoHTTP:  "8080",
 	}
 
-	mediciones, err := m.consultarEdgeConTimeout(nodo, "/sensores/temp", 1000, 3000, 5*time.Second)
+	resultado, err := m.consultarEdgeConTimeout(nodo, "/sensores/temp", 1000, 3000, 5*time.Second)
 
 	assert.NoError(t, err)
-	assert.Empty(t, mediciones)
-	t.Log("consultarEdgeConTimeout retorna lista vacia cuando no hay datos")
+	assert.Empty(t, resultado.Tiempos)
+	t.Log("consultarEdgeConTimeout retorna resultado vacío cuando no hay datos")
 }
 
-// TestConsultarEdgeConTimeout_ErrorConexion verifica que error de conexion retorna nil, nil
+// TestConsultarEdgeConTimeout_ErrorConexion verifica que error de conexion retorna resultado vacío
 func TestConsultarEdgeConTimeout_ErrorConexion(t *testing.T) {
 	mockEdge := &mockClienteEdge{
 		err: assert.AnError,
@@ -750,12 +770,13 @@ func TestConsultarEdgeConTimeout_ErrorConexion(t *testing.T) {
 		PuertoHTTP:  "8080",
 	}
 
-	// Error de conexion retorna nil, nil (el edge puede estar offline)
-	mediciones, err := m.consultarEdgeConTimeout(nodo, "/sensores/temp", 1000, 3000, 5*time.Second)
+	// Error de conexion retorna resultado vacío sin error (el edge puede estar offline)
+	resultado, err := m.consultarEdgeConTimeout(nodo, "/sensores/temp", 1000, 3000, 5*time.Second)
 
 	assert.Nil(t, err)
-	assert.Nil(t, mediciones)
-	t.Log("consultarEdgeConTimeout retorna nil, nil cuando hay error de conexion")
+	assert.Empty(t, resultado.Tiempos)
+	assert.Empty(t, resultado.Series)
+	t.Log("consultarEdgeConTimeout retorna resultado vacío cuando hay error de conexion")
 }
 
 // TestConsultarEdgeConTimeout_ErrorDelEdge verifica manejo de error reportado por el edge
@@ -1017,14 +1038,13 @@ func TestConsultarRango_SerieNoEncontrada(t *testing.T) {
 
 // TestConsultarRango_SoloEdge verifica consulta cuando solo edge tiene datos
 func TestConsultarRango_SoloEdge(t *testing.T) {
-	medicionesEdge := []tipos.Medicion{
-		{Tiempo: 1000, Valor: 10.0},
-		{Tiempo: 2000, Valor: 20.0},
-	}
-
 	mockEdge := &mockClienteEdge{
 		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: medicionesEdge,
+			Resultado: tipos.ResultadoConsultaRango{
+				Series:  []string{"/sensores/temp"},
+				Tiempos: []int64{1000, 2000},
+				Valores: [][]interface{}{{10.0}, {20.0}},
+			},
 		},
 	}
 
@@ -1053,10 +1073,11 @@ func TestConsultarRango_SoloEdge(t *testing.T) {
 	inicio := time.Unix(0, 500)
 	fin := time.Unix(0, 3000)
 
-	mediciones, err := m.ConsultarRango("/sensores/temp", inicio, fin)
+	resultado, err := m.ConsultarRango("/sensores/temp", inicio, fin)
 
 	assert.NoError(t, err)
-	assert.Len(t, mediciones, 2)
+	assert.Len(t, resultado.Tiempos, 2)
+	assert.Equal(t, []string{"/sensores/temp"}, resultado.Series)
 	t.Log("ConsultarRango combina datos de edge cuando S3 esta vacio")
 }
 
@@ -1092,10 +1113,10 @@ func TestConsultarRango_EdgeOffline(t *testing.T) {
 	fin := time.Unix(0, 3000)
 
 	// Debe continuar con datos de S3 incluso si el edge falla
-	mediciones, err := m.ConsultarRango("/sensores/temp", inicio, fin)
+	resultado, err := m.ConsultarRango("/sensores/temp", inicio, fin)
 
 	assert.NoError(t, err)
-	assert.Empty(t, mediciones)
+	assert.Empty(t, resultado.Tiempos)
 	t.Log("ConsultarRango continua cuando edge esta offline")
 }
 
@@ -1103,7 +1124,7 @@ func TestConsultarRango_EdgeOffline(t *testing.T) {
 func TestConsultarRango_ErrorS3(t *testing.T) {
 	mockEdge := &mockClienteEdge{
 		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: []tipos.Medicion{},
+			Resultado: tipos.ResultadoConsultaRango{},
 		},
 	}
 
@@ -1285,9 +1306,10 @@ func crearBloqueComprimidoTest(t *testing.T, mediciones []tipos.Medicion, tipoDa
 func TestClienteEdgeHTTP_ConsultarRango_Exitoso(t *testing.T) {
 	// Crear respuesta esperada
 	respuestaEsperada := tipos.RespuestaConsultaRango{
-		Mediciones: []tipos.Medicion{
-			{Tiempo: 1000, Valor: 10.0},
-			{Tiempo: 2000, Valor: 20.0},
+		Resultado: tipos.ResultadoConsultaRango{
+			Series:  []string{"/sensores/temp"},
+			Tiempos: []int64{1000, 2000},
+			Valores: [][]interface{}{{10.0}, {20.0}},
 		},
 		Error: "",
 	}
@@ -1323,8 +1345,8 @@ func TestClienteEdgeHTTP_ConsultarRango_Exitoso(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotNil(t, respuesta)
-	assert.Len(t, respuesta.Mediciones, 2)
-	assert.Equal(t, int64(1000), respuesta.Mediciones[0].Tiempo)
+	assert.Len(t, respuesta.Resultado.Tiempos, 2)
+	assert.Equal(t, int64(1000), respuesta.Resultado.Tiempos[0])
 	t.Log("clienteEdgeHTTP.ConsultarRango funciona correctamente via HTTP")
 }
 
@@ -2094,9 +2116,7 @@ func TestConsultarAgregacion_Promedio(t *testing.T) {
 	}
 
 	mockEdge := &mockClienteEdge{
-		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: medicionesEdge,
-		},
+		respuestaRango: crearRespuestaRangoTabular("/sensores/temp", medicionesEdge),
 	}
 
 	mockS3 := &mockClienteS3{
@@ -2127,7 +2147,9 @@ func TestConsultarAgregacion_Promedio(t *testing.T) {
 	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, tipos.AgregacionPromedio)
 
 	assert.NoError(t, err)
-	assert.Equal(t, 20.0, resultado) // (10 + 20 + 30) / 3 = 20
+	require.Len(t, resultado.Series, 1)
+	assert.Equal(t, "/sensores/temp", resultado.Series[0])
+	assert.Equal(t, 20.0, resultado.Valores[0]) // (10 + 20 + 30) / 3 = 20
 	t.Log("ConsultarAgregacion calcula promedio correctamente")
 }
 
@@ -2140,9 +2162,7 @@ func TestConsultarAgregacion_Maximo(t *testing.T) {
 	}
 
 	mockEdge := &mockClienteEdge{
-		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: medicionesEdge,
-		},
+		respuestaRango: crearRespuestaRangoTabular("/sensores/temp", medicionesEdge),
 	}
 
 	mockS3 := &mockClienteS3{
@@ -2173,7 +2193,8 @@ func TestConsultarAgregacion_Maximo(t *testing.T) {
 	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, tipos.AgregacionMaximo)
 
 	assert.NoError(t, err)
-	assert.Equal(t, 50.0, resultado)
+	require.Len(t, resultado.Series, 1)
+	assert.Equal(t, 50.0, resultado.Valores[0])
 	t.Log("ConsultarAgregacion calcula maximo correctamente")
 }
 
@@ -2186,9 +2207,7 @@ func TestConsultarAgregacion_Minimo(t *testing.T) {
 	}
 
 	mockEdge := &mockClienteEdge{
-		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: medicionesEdge,
-		},
+		respuestaRango: crearRespuestaRangoTabular("/sensores/temp", medicionesEdge),
 	}
 
 	mockS3 := &mockClienteS3{
@@ -2219,7 +2238,8 @@ func TestConsultarAgregacion_Minimo(t *testing.T) {
 	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, tipos.AgregacionMinimo)
 
 	assert.NoError(t, err)
-	assert.Equal(t, 5.0, resultado)
+	require.Len(t, resultado.Series, 1)
+	assert.Equal(t, 5.0, resultado.Valores[0])
 	t.Log("ConsultarAgregacion calcula minimo correctamente")
 }
 
@@ -2232,9 +2252,7 @@ func TestConsultarAgregacion_Suma(t *testing.T) {
 	}
 
 	mockEdge := &mockClienteEdge{
-		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: medicionesEdge,
-		},
+		respuestaRango: crearRespuestaRangoTabular("/sensores/temp", medicionesEdge),
 	}
 
 	mockS3 := &mockClienteS3{
@@ -2265,7 +2283,8 @@ func TestConsultarAgregacion_Suma(t *testing.T) {
 	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, tipos.AgregacionSuma)
 
 	assert.NoError(t, err)
-	assert.Equal(t, 60.0, resultado) // 10 + 20 + 30 = 60
+	require.Len(t, resultado.Series, 1)
+	assert.Equal(t, 60.0, resultado.Valores[0]) // 10 + 20 + 30 = 60
 	t.Log("ConsultarAgregacion calcula suma correctamente")
 }
 
@@ -2278,9 +2297,7 @@ func TestConsultarAgregacion_Count(t *testing.T) {
 	}
 
 	mockEdge := &mockClienteEdge{
-		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: medicionesEdge,
-		},
+		respuestaRango: crearRespuestaRangoTabular("/sensores/temp", medicionesEdge),
 	}
 
 	mockS3 := &mockClienteS3{
@@ -2311,16 +2328,15 @@ func TestConsultarAgregacion_Count(t *testing.T) {
 	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, tipos.AgregacionCount)
 
 	assert.NoError(t, err)
-	assert.Equal(t, 3.0, resultado)
+	require.Len(t, resultado.Series, 1)
+	assert.Equal(t, 3.0, resultado.Valores[0])
 	t.Log("ConsultarAgregacion calcula count correctamente")
 }
 
 // TestConsultarAgregacion_SinDatos verifica error cuando no hay datos
 func TestConsultarAgregacion_SinDatos(t *testing.T) {
 	mockEdge := &mockClienteEdge{
-		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: []tipos.Medicion{},
-		},
+		respuestaRango: crearRespuestaRangoTabular("/sensores/temp", []tipos.Medicion{}),
 	}
 
 	mockS3 := &mockClienteS3{
@@ -2364,9 +2380,7 @@ func TestConsultarAgregacion_ConInt64(t *testing.T) {
 	}
 
 	mockEdge := &mockClienteEdge{
-		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: medicionesEdge,
-		},
+		respuestaRango: crearRespuestaRangoTabular("/sensores/temp", medicionesEdge),
 	}
 
 	mockS3 := &mockClienteS3{
@@ -2397,7 +2411,8 @@ func TestConsultarAgregacion_ConInt64(t *testing.T) {
 	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, tipos.AgregacionPromedio)
 
 	assert.NoError(t, err)
-	assert.Equal(t, 20.0, resultado)
+	require.Len(t, resultado.Series, 1)
+	assert.Equal(t, 20.0, resultado.Valores[0])
 	t.Log("ConsultarAgregacion funciona con valores int64")
 }
 
@@ -2454,9 +2469,7 @@ func TestConsultarAgregacionTemporal_MultipleBuckets(t *testing.T) {
 	}
 
 	mockEdge := &mockClienteEdge{
-		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: medicionesEdge,
-		},
+		respuestaRango: crearRespuestaRangoTabular("/sensores/temp", medicionesEdge),
 	}
 
 	mockS3 := &mockClienteS3{
@@ -2485,17 +2498,19 @@ func TestConsultarAgregacionTemporal_MultipleBuckets(t *testing.T) {
 	fin := time.Unix(0, 3000)
 	intervalo := time.Duration(1000) // 1000 nanosegundos
 
-	resultados, err := m.ConsultarAgregacionTemporal("/sensores/temp", inicio, fin, tipos.AgregacionPromedio, intervalo)
+	resultado, err := m.ConsultarAgregacionTemporal("/sensores/temp", inicio, fin, tipos.AgregacionPromedio, intervalo)
 
 	assert.NoError(t, err)
-	assert.Len(t, resultados, 3)
+	assert.Len(t, resultado.Tiempos, 3)
+	assert.Len(t, resultado.Series, 1)
+	assert.Equal(t, "/sensores/temp", resultado.Series[0])
 
 	// Bucket 1: promedio de 10 y 20 = 15
-	assert.Equal(t, 15.0, resultados[0].Valor)
+	assert.Equal(t, 15.0, resultado.Valores[0][0])
 	// Bucket 2: promedio de 30 y 40 = 35
-	assert.Equal(t, 35.0, resultados[1].Valor)
+	assert.Equal(t, 35.0, resultado.Valores[1][0])
 	// Bucket 3: promedio de 50 y 60 = 55
-	assert.Equal(t, 55.0, resultados[2].Valor)
+	assert.Equal(t, 55.0, resultado.Valores[2][0])
 
 	t.Log("ConsultarAgregacionTemporal genera multiples buckets correctamente")
 }
@@ -2503,9 +2518,7 @@ func TestConsultarAgregacionTemporal_MultipleBuckets(t *testing.T) {
 // TestConsultarAgregacionTemporal_SinDatos verifica error cuando no hay datos
 func TestConsultarAgregacionTemporal_SinDatos(t *testing.T) {
 	mockEdge := &mockClienteEdge{
-		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: []tipos.Medicion{},
-		},
+		respuestaRango: crearRespuestaRangoTabular("/sensores/temp", []tipos.Medicion{}),
 	}
 
 	mockS3 := &mockClienteS3{
@@ -2550,9 +2563,7 @@ func TestConsultarAgregacionTemporal_OrdenCronologico(t *testing.T) {
 	}
 
 	mockEdge := &mockClienteEdge{
-		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: medicionesEdge,
-		},
+		respuestaRango: crearRespuestaRangoTabular("/sensores/temp", medicionesEdge),
 	}
 
 	mockS3 := &mockClienteS3{
@@ -2581,14 +2592,15 @@ func TestConsultarAgregacionTemporal_OrdenCronologico(t *testing.T) {
 	fin := time.Unix(0, 3000)
 	intervalo := time.Duration(1000)
 
-	resultados, err := m.ConsultarAgregacionTemporal("/sensores/temp", inicio, fin, tipos.AgregacionPromedio, intervalo)
+	resultado, err := m.ConsultarAgregacionTemporal("/sensores/temp", inicio, fin, tipos.AgregacionPromedio, intervalo)
 
 	assert.NoError(t, err)
-	assert.Len(t, resultados, 3)
+	assert.Len(t, resultado.Tiempos, 3)
+	assert.Len(t, resultado.Series, 1)
 
-	// Verificar orden cronologico
-	for i := 1; i < len(resultados); i++ {
-		assert.True(t, resultados[i].Tiempo.After(resultados[i-1].Tiempo),
+	// Verificar orden cronologico de los tiempos
+	for i := 1; i < len(resultado.Tiempos); i++ {
+		assert.True(t, resultado.Tiempos[i] > resultado.Tiempos[i-1],
 			"Resultados deben estar ordenados cronologicamente")
 	}
 
@@ -2613,24 +2625,6 @@ func TestCalcularAgregacionSimple_TipoInvalido(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no soportado")
 	t.Log("calcularAgregacionSimple retorna error con tipo invalido")
-}
-
-// TestConvertirMedicionesAFloat64 verifica conversion de mediciones
-func TestConvertirMedicionesAFloat64(t *testing.T) {
-	mediciones := []tipos.Medicion{
-		{Tiempo: 1000, Valor: 10.0},
-		{Tiempo: 2000, Valor: int64(20)},
-		{Tiempo: 3000, Valor: "texto"}, // Sera ignorado
-		{Tiempo: 4000, Valor: 30.0},
-	}
-
-	valores := convertirMedicionesAFloat64(mediciones)
-
-	assert.Len(t, valores, 3) // Solo 3 valores numericos
-	assert.Equal(t, 10.0, valores[0])
-	assert.Equal(t, 20.0, valores[1])
-	assert.Equal(t, 30.0, valores[2])
-	t.Log("convertirMedicionesAFloat64 convierte correctamente y omite no numericos")
 }
 
 // ============================================================================
@@ -2800,11 +2794,15 @@ func TestBuscarSeriesPorPath_Wildcard_MultiplesNodos(t *testing.T) {
 
 // TestConsultarAgregacion_Wildcard_MultiplesSeries verifica agregacion con wildcard
 func TestConsultarAgregacion_Wildcard_MultiplesSeries(t *testing.T) {
+	// El mock retorna datos tabulares combinados para ambas series
+	// Tiempo 1000: serie1=10.0, serie2=15.0
+	// Tiempo 2000: serie1=20.0, serie2=25.0
 	mockEdge := &mockClienteEdge{
 		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: []tipos.Medicion{
-				{Tiempo: 1000, Valor: 10.0},
-				{Tiempo: 2000, Valor: 20.0},
+			Resultado: tipos.ResultadoConsultaRango{
+				Series:  []string{"sensor_01/temp", "sensor_02/temp"},
+				Tiempos: []int64{1000, 2000},
+				Valores: [][]interface{}{{10.0, 15.0}, {20.0, 25.0}},
 			},
 		},
 	}
@@ -2835,14 +2833,18 @@ func TestConsultarAgregacion_Wildcard_MultiplesSeries(t *testing.T) {
 	inicio := time.Unix(0, 500)
 	fin := time.Unix(0, 2500)
 
-	// El mock devuelve los mismos datos para ambas series
-	// Entonces tendremos 4 valores: 10, 20, 10, 20
-	// Promedio = (10 + 20 + 10 + 20) / 4 = 15
+	// Ahora columnar: cada serie tiene su propio promedio
+	// serie1: (10 + 20) / 2 = 15
+	// serie2: (15 + 25) / 2 = 20
 	resultado, err := m.ConsultarAgregacion("*/temp", inicio, fin, tipos.AgregacionPromedio)
 
 	assert.NoError(t, err)
-	assert.Equal(t, 15.0, resultado)
-	t.Log("ConsultarAgregacion con wildcard combina datos de multiples series")
+	require.Len(t, resultado.Series, 2)
+	assert.Equal(t, "sensor_01/temp", resultado.Series[0])
+	assert.Equal(t, "sensor_02/temp", resultado.Series[1])
+	assert.Equal(t, 15.0, resultado.Valores[0])
+	assert.Equal(t, 20.0, resultado.Valores[1])
+	t.Log("ConsultarAgregacion con wildcard retorna valores por serie")
 }
 
 // TestConsultarAgregacion_Wildcard_SinCoincidencias verifica error cuando wildcard no coincide
@@ -2870,10 +2872,13 @@ func TestConsultarAgregacion_Wildcard_SinCoincidencias(t *testing.T) {
 
 // TestConsultarAgregacion_Wildcard_Suma verifica suma con wildcard
 func TestConsultarAgregacion_Wildcard_Suma(t *testing.T) {
+	// El mock retorna datos tabulares combinados para las 3 series (cada una con valor 10)
 	mockEdge := &mockClienteEdge{
 		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: []tipos.Medicion{
-				{Tiempo: 1000, Valor: 10.0},
+			Resultado: tipos.ResultadoConsultaRango{
+				Series:  []string{"sensor_01/temp", "sensor_02/temp", "sensor_03/temp"},
+				Tiempos: []int64{1000},
+				Valores: [][]interface{}{{10.0, 10.0, 10.0}},
 			},
 		},
 	}
@@ -2905,21 +2910,26 @@ func TestConsultarAgregacion_Wildcard_Suma(t *testing.T) {
 	inicio := time.Unix(0, 0)
 	fin := time.Unix(0, 2000)
 
-	// 3 series, cada una con valor 10 -> suma = 30
+	// 3 series, cada una con valor 10 -> cada serie tiene suma = 10
 	resultado, err := m.ConsultarAgregacion("*/temp", inicio, fin, tipos.AgregacionSuma)
 
 	assert.NoError(t, err)
-	assert.Equal(t, 30.0, resultado)
-	t.Log("ConsultarAgregacion con wildcard calcula suma correctamente")
+	require.Len(t, resultado.Series, 3)
+	assert.Equal(t, 10.0, resultado.Valores[0])
+	assert.Equal(t, 10.0, resultado.Valores[1])
+	assert.Equal(t, 10.0, resultado.Valores[2])
+	t.Log("ConsultarAgregacion con wildcard calcula suma por serie")
 }
 
 // TestConsultarAgregacion_Wildcard_Count verifica count con wildcard
 func TestConsultarAgregacion_Wildcard_Count(t *testing.T) {
+	// 2 series x 2 mediciones = 4 valores totales
 	mockEdge := &mockClienteEdge{
 		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: []tipos.Medicion{
-				{Tiempo: 1000, Valor: 10.0},
-				{Tiempo: 2000, Valor: 20.0},
+			Resultado: tipos.ResultadoConsultaRango{
+				Series:  []string{"sensor_01/temp", "sensor_02/temp"},
+				Tiempos: []int64{1000, 2000},
+				Valores: [][]interface{}{{10.0, 15.0}, {20.0, 25.0}},
 			},
 		},
 	}
@@ -2950,21 +2960,27 @@ func TestConsultarAgregacion_Wildcard_Count(t *testing.T) {
 	inicio := time.Unix(0, 0)
 	fin := time.Unix(0, 3000)
 
-	// 2 series x 2 mediciones = 4 mediciones totales
+	// 2 series x 2 mediciones = cada serie tiene count = 2
 	resultado, err := m.ConsultarAgregacion("*/temp", inicio, fin, tipos.AgregacionCount)
 
 	assert.NoError(t, err)
-	assert.Equal(t, 4.0, resultado)
-	t.Log("ConsultarAgregacion con wildcard calcula count correctamente")
+	require.Len(t, resultado.Series, 2)
+	assert.Equal(t, 2.0, resultado.Valores[0])
+	assert.Equal(t, 2.0, resultado.Valores[1])
+	t.Log("ConsultarAgregacion con wildcard calcula count por serie")
 }
 
 // TestConsultarAgregacionTemporal_Wildcard verifica downsampling con wildcard
 func TestConsultarAgregacionTemporal_Wildcard(t *testing.T) {
+	// 2 series con datos en tiempos 100 y 500
+	// Tiempo 100: serie1=10.0, serie2=15.0
+	// Tiempo 500: serie1=20.0, serie2=25.0
 	mockEdge := &mockClienteEdge{
 		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: []tipos.Medicion{
-				{Tiempo: 100, Valor: 10.0},
-				{Tiempo: 500, Valor: 20.0},
+			Resultado: tipos.ResultadoConsultaRango{
+				Series:  []string{"sensor_01/temp", "sensor_02/temp"},
+				Tiempos: []int64{100, 500},
+				Valores: [][]interface{}{{10.0, 15.0}, {20.0, 25.0}},
 			},
 		},
 	}
@@ -2996,12 +3012,15 @@ func TestConsultarAgregacionTemporal_Wildcard(t *testing.T) {
 	fin := time.Unix(0, 1000)
 	intervalo := time.Duration(1000) // 1000ns = un solo bucket
 
-	resultados, err := m.ConsultarAgregacionTemporal("*/temp", inicio, fin, tipos.AgregacionPromedio, intervalo)
+	resultado, err := m.ConsultarAgregacionTemporal("*/temp", inicio, fin, tipos.AgregacionPromedio, intervalo)
 
 	assert.NoError(t, err)
-	assert.Len(t, resultados, 1)
-	// 2 series x 2 mediciones = 4 valores: 10, 20, 10, 20 -> promedio = 15
-	assert.Equal(t, 15.0, resultados[0].Valor)
+	assert.Len(t, resultado.Tiempos, 1)
+	assert.Len(t, resultado.Series, 2)
+	// Serie 1: promedio de 10 y 20 = 15
+	assert.Equal(t, 15.0, resultado.Valores[0][0])
+	// Serie 2: promedio de 15 y 25 = 20
+	assert.Equal(t, 20.0, resultado.Valores[0][1])
 	t.Log("ConsultarAgregacionTemporal con wildcard funciona correctamente")
 }
 
@@ -3030,13 +3049,13 @@ func TestConsultarAgregacionTemporal_Wildcard_SinCoincidencias(t *testing.T) {
 
 // TestConsultarAgregacionTemporal_Wildcard_MultipleBuckets verifica multiples buckets con wildcard
 func TestConsultarAgregacionTemporal_Wildcard_MultipleBuckets(t *testing.T) {
+	// 2 series con datos en buckets diferentes
 	mockEdge := &mockClienteEdge{
 		respuestaRango: &tipos.RespuestaConsultaRango{
-			Mediciones: []tipos.Medicion{
-				// Bucket 1: [0, 1000)
-				{Tiempo: 100, Valor: 10.0},
-				// Bucket 2: [1000, 2000)
-				{Tiempo: 1100, Valor: 20.0},
+			Resultado: tipos.ResultadoConsultaRango{
+				Series:  []string{"sensor_01/temp", "sensor_02/temp"},
+				Tiempos: []int64{100, 1100}, // Bucket 1: [0, 1000), Bucket 2: [1000, 2000)
+				Valores: [][]interface{}{{10.0, 10.0}, {20.0, 20.0}},
 			},
 		},
 	}
@@ -3068,13 +3087,16 @@ func TestConsultarAgregacionTemporal_Wildcard_MultipleBuckets(t *testing.T) {
 	fin := time.Unix(0, 2000)
 	intervalo := time.Duration(1000)
 
-	resultados, err := m.ConsultarAgregacionTemporal("*/temp", inicio, fin, tipos.AgregacionPromedio, intervalo)
+	resultado, err := m.ConsultarAgregacionTemporal("*/temp", inicio, fin, tipos.AgregacionPromedio, intervalo)
 
 	assert.NoError(t, err)
-	assert.Len(t, resultados, 2)
-	// Bucket 1: 2 series x 10.0 = promedio 10.0
-	assert.Equal(t, 10.0, resultados[0].Valor)
-	// Bucket 2: 2 series x 20.0 = promedio 20.0
-	assert.Equal(t, 20.0, resultados[1].Valor)
+	assert.Len(t, resultado.Tiempos, 2)
+	assert.Len(t, resultado.Series, 2)
+	// Bucket 1: serie1=10.0, serie2=10.0
+	assert.Equal(t, 10.0, resultado.Valores[0][0])
+	assert.Equal(t, 10.0, resultado.Valores[0][1])
+	// Bucket 2: serie1=20.0, serie2=20.0
+	assert.Equal(t, 20.0, resultado.Valores[1][0])
+	assert.Equal(t, 20.0, resultado.Valores[1][1])
 	t.Log("ConsultarAgregacionTemporal con wildcard genera multiples buckets correctamente")
 }

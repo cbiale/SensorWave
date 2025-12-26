@@ -21,10 +21,19 @@ type SolicitudConsultaPunto struct {
 	Serie string
 }
 
-// RespuestaConsultaRango respuesta con múltiples mediciones
+// ResultadoConsultaRango representa el resultado de una consulta de rango en formato tabular.
+// Cada serie temporal es una columna, los timestamps son las filas.
+// Valores faltantes se representan como nil.
+type ResultadoConsultaRango struct {
+	Series  []string        // Columnas: nombres de series ordenados alfabéticamente
+	Tiempos []int64         // Filas: timestamps únicos ordenados ascendente (Unix nanosegundos)
+	Valores [][]interface{} // Matriz [fila][columna], nil = valor faltante
+}
+
+// RespuestaConsultaRango respuesta con resultado tabular de consulta por rango
 type RespuestaConsultaRango struct {
-	Mediciones []Medicion
-	Error      string
+	Resultado ResultadoConsultaRango
+	Error     string
 }
 
 // RespuestaConsultaPunto respuesta con una medición
@@ -51,16 +60,23 @@ type SolicitudConsultaAgregacionTemporal struct {
 	Intervalo    int64 // Duration en nanosegundos
 }
 
-// RespuestaConsultaAgregacion respuesta con valor agregado
-type RespuestaConsultaAgregacion struct {
-	Valor float64
-	Error string
+// ResultadoAgregacion representa el resultado columnar de una agregación.
+// Cada serie tiene su valor agregado independiente.
+type ResultadoAgregacion struct {
+	Series  []string  // Nombres de series ordenados alfabéticamente
+	Valores []float64 // Valor agregado por serie (mismo orden)
 }
 
-// RespuestaConsultaAgregacionTemporal respuesta con resultados de downsampling
+// RespuestaConsultaAgregacion respuesta con resultado de agregación columnar
+type RespuestaConsultaAgregacion struct {
+	Resultado ResultadoAgregacion
+	Error     string
+}
+
+// RespuestaConsultaAgregacionTemporal respuesta con resultado de downsampling en formato matricial
 type RespuestaConsultaAgregacionTemporal struct {
-	Resultados []ResultadoAgregacionTemporal
-	Error      string
+	Resultado ResultadoAgregacionTemporal
+	Error     string
 }
 
 // ============================================================================
@@ -92,16 +108,21 @@ func init() {
 	// Tipos de consulta
 	gob.Register(SolicitudConsultaRango{})
 	gob.Register(SolicitudConsultaPunto{})
+	gob.Register(ResultadoConsultaRango{})
 	gob.Register(RespuestaConsultaRango{})
 	gob.Register(RespuestaConsultaPunto{})
+
+	// Tipos para matriz de valores (interface{} puede contener nil o valores)
+	gob.Register([]interface{}{})
 
 	// Tipos de consulta de agregación
 	gob.Register(SolicitudConsultaAgregacion{})
 	gob.Register(SolicitudConsultaAgregacionTemporal{})
+	gob.Register(ResultadoAgregacion{})
 	gob.Register(RespuestaConsultaAgregacion{})
 	gob.Register(RespuestaConsultaAgregacionTemporal{})
 	gob.Register(ResultadoAgregacionTemporal{})
-	gob.Register([]ResultadoAgregacionTemporal{})
+	gob.Register([][]float64{})
 
 	// Tipos de datos
 	gob.Register(Medicion{})

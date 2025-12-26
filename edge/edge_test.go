@@ -185,6 +185,61 @@ func TestMatchTags(t *testing.T) {
 }
 
 // ============================================================================
+// TESTS DE CREAR() - VALIDACIÓN DE OPCIONES
+// ============================================================================
+
+// TestCrear_SinS3SinPuerto_ModoLocal verifica modo puramente local
+func TestCrear_SinS3SinPuerto_ModoLocal(t *testing.T) {
+	tempDir := t.TempDir()
+
+	manager, err := Crear(Opciones{
+		NombreDB:   tempDir + "/test_local.db",
+		PuertoHTTP: "",  // Sin puerto
+		ConfigS3:   nil, // Sin S3
+	})
+
+	require.NoError(t, err)
+	defer manager.Cerrar()
+
+	assert.NotEmpty(t, manager.ObtenerNodoID())
+	assert.Empty(t, manager.puertoHTTP)
+	t.Log("✓ Crear funciona en modo local sin servidor HTTP")
+}
+
+// TestCrear_ConS3SinPuerto_Error verifica que falla si hay S3 pero no puerto
+func TestCrear_ConS3SinPuerto_Error(t *testing.T) {
+	tempDir := t.TempDir()
+
+	_, err := Crear(Opciones{
+		NombreDB:   tempDir + "/test_s3.db",
+		PuertoHTTP: "", // Sin puerto
+		ConfigS3: &tipos.ConfiguracionS3{
+			Endpoint: "http://localhost:9000",
+			Bucket:   "test",
+		},
+	})
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "PuertoHTTP es requerido")
+	t.Log("✓ Crear retorna error cuando hay S3 pero no puerto HTTP")
+}
+
+// TestCrear_SinS3ConPuerto_Error verifica que falla si hay puerto pero no S3
+func TestCrear_SinS3ConPuerto_Error(t *testing.T) {
+	tempDir := t.TempDir()
+
+	_, err := Crear(Opciones{
+		NombreDB:   tempDir + "/test_puerto.db",
+		PuertoHTTP: "8080", // Con puerto
+		ConfigS3:   nil,    // Sin S3
+	})
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no debe especificarse sin ConfigS3")
+	t.Log("✓ Crear retorna error cuando hay puerto HTTP pero no S3")
+}
+
+// ============================================================================
 // TESTS DE SERIES.GO
 // ============================================================================
 
@@ -1965,10 +2020,14 @@ func TestConsultarUltimoPunto_DesdeBuffer(t *testing.T) {
 	manager.buffers.Store("sensor/temp", buffer)
 
 	// Consultar último punto
-	medicion, err := manager.ConsultarUltimoPunto("sensor/temp")
+	resultado, err := manager.ConsultarUltimoPunto("sensor/temp")
 	require.NoError(t, err)
-	assert.Equal(t, ahora, medicion.Tiempo)
-	assert.Equal(t, float64(22.0), medicion.Valor)
+
+	// Verificar formato columnar
+	require.Len(t, resultado.Series, 1)
+	assert.Equal(t, "sensor/temp", resultado.Series[0])
+	assert.Equal(t, ahora, resultado.Tiempos[0])
+	assert.Equal(t, float64(22.0), resultado.Valores[0])
 	t.Log("ConsultarUltimoPunto lee desde buffer correctamente")
 }
 
@@ -2004,9 +2063,13 @@ func TestConsultarUltimoPunto_DesdeDB(t *testing.T) {
 	require.NoError(t, err)
 
 	// Consultar (sin buffer)
-	medicion, err := manager.ConsultarUltimoPunto("sensor/temp")
+	resultado, err := manager.ConsultarUltimoPunto("sensor/temp")
 	require.NoError(t, err)
-	assert.Equal(t, ahora, medicion.Tiempo)
+
+	// Verificar formato columnar
+	require.Len(t, resultado.Series, 1)
+	assert.Equal(t, "sensor/temp", resultado.Series[0])
+	assert.Equal(t, ahora, resultado.Tiempos[0])
 	t.Log("ConsultarUltimoPunto lee desde DB cuando buffer vacío")
 }
 
@@ -2118,8 +2181,12 @@ func TestHandleConsultaUltimo_Exitoso(t *testing.T) {
 	var respuesta tipos.RespuestaConsultaPunto
 	err := tipos.DeserializarGob(w.Body.Bytes(), &respuesta)
 	require.NoError(t, err)
-	assert.True(t, respuesta.Encontrado)
-	assert.Equal(t, float64(25.0), respuesta.Medicion.Valor)
+
+	// Verificar formato columnar
+	require.Len(t, respuesta.Resultado.Series, 1)
+	assert.Equal(t, "sensor/temp", respuesta.Resultado.Series[0])
+	assert.Equal(t, float64(25.0), respuesta.Resultado.Valores[0])
+	assert.Empty(t, respuesta.Error)
 	t.Log("handleConsultaUltimo retorna último punto correctamente")
 }
 
@@ -2128,8 +2195,11 @@ func TestEnviarRespuestaGob_Exitoso(t *testing.T) {
 	w := httptest.NewRecorder()
 
 	respuesta := tipos.RespuestaConsultaPunto{
-		Medicion:   tipos.Medicion{Tiempo: 1000, Valor: float64(25.0)},
-		Encontrado: true,
+		Resultado: tipos.ResultadoConsultaPunto{
+			Series:  []string{"sensor/temp"},
+			Tiempos: []int64{1000},
+			Valores: []interface{}{float64(25.0)},
+		},
 	}
 
 	enviarRespuestaGob(w, respuesta)

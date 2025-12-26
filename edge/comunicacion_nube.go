@@ -168,12 +168,11 @@ func (me *ManagerEdge) handleConsultaUltimo(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Ejecutar consulta
-	medicion, err := me.ConsultarUltimoPunto(solicitud.Serie)
+	resultado, err := me.ConsultarUltimoPunto(solicitud.Serie)
 
 	// Construir respuesta
 	respuesta := tipos.RespuestaConsultaPunto{
-		Medicion:   medicion,
-		Encontrado: err == nil,
+		Resultado: resultado,
 	}
 	if err != nil {
 		respuesta.Error = err.Error()

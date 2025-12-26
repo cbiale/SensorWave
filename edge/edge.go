@@ -47,7 +47,7 @@ type SerieBuffer struct {
 // ConfigS3 es opcional (nil = modo desconectado sin sincronización con nube).
 type Opciones struct {
 	NombreDB      string                 // Nombre de la base de datos Pebble (requerido)
-	PuertoHTTP    string                 // Puerto HTTP para API REST (requerido)
+	PuertoHTTP    string                 // Puerto HTTP para API REST (requerido solo si ConfigS3 != nil)
 	ConfigS3      *tipos.ConfiguracionS3 // nil = modo local sin nube (debe ser explícito si se usa)
 	TamañoBuffer  int                    // Tamaño del canal de buffer por serie (default: 1000)
 	TimeoutBuffer int64                  // Timeout en nanosegundos para inserción (default: 100ms)
@@ -63,10 +63,23 @@ func Crear(opts Opciones) (*ManagerEdge, error) {
 		return &ManagerEdge{}, fmt.Errorf("NombreDB es requerido")
 	}
 
-	// Validar puerto HTTP
-	puertoHTTP, err := validarPuertoHTTP(opts.PuertoHTTP)
-	if err != nil {
-		return &ManagerEdge{}, err
+	// Validar puerto HTTP según configuración de S3
+	var puertoHTTP string
+	var err error
+	if opts.ConfigS3 != nil {
+		// Con S3: puerto HTTP es requerido
+		if opts.PuertoHTTP == "" {
+			return &ManagerEdge{}, fmt.Errorf("PuertoHTTP es requerido cuando ConfigS3 está configurado")
+		}
+		puertoHTTP, err = validarPuertoHTTP(opts.PuertoHTTP)
+		if err != nil {
+			return &ManagerEdge{}, err
+		}
+	} else {
+		// Sin S3: puerto HTTP no debe especificarse
+		if opts.PuertoHTTP != "" {
+			return &ManagerEdge{}, fmt.Errorf("PuertoHTTP no debe especificarse sin ConfigS3 (no tiene sentido exponer HTTP sin registro en nube)")
+		}
 	}
 
 	// Aplicar defaults para buffer
@@ -104,9 +117,11 @@ func Crear(opts Opciones) (*ManagerEdge, error) {
 		timeoutBuffer: timeoutBuffer,
 	}
 
-	// Iniciar servidor HTTP propio para peticiones de despachadores
-	listoHTTP := manager.iniciarServidorHTTP()
-	<-listoHTTP
+	// Iniciar servidor HTTP solo si hay puerto configurado (modo conectado con S3)
+	if puertoHTTP != "" {
+		listoHTTP := manager.iniciarServidorHTTP()
+		<-listoHTTP
+	}
 
 	// Cargar o generar nodoID
 	nodoIDBytes, closer, err := db.Get([]byte("meta/nodo_id"))
@@ -167,7 +182,7 @@ func Crear(opts Opciones) (*ManagerEdge, error) {
 			}
 		}
 	} else {
-		log.Printf("Modo local: sin registro en nube (S3 no configurado)")
+		log.Printf("Modo local: sin registro en nube ni servidor HTTP")
 	}
 
 	// Inicializar el motor de reglas integrado

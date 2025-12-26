@@ -40,7 +40,7 @@ func (m *mockClienteEdge) ConsultarRango(ctx context.Context, direccion string, 
 	return m.respuestaRango, nil
 }
 
-func (m *mockClienteEdge) ConsultarUltimoPunto(ctx context.Context, direccion string, req tipos.SolicitudConsultaPunto, tipo string) (*tipos.RespuestaConsultaPunto, error) {
+func (m *mockClienteEdge) ConsultarUltimoPunto(ctx context.Context, direccion string, req tipos.SolicitudConsultaPunto) (*tipos.RespuestaConsultaPunto, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -83,6 +83,24 @@ func crearRespuestaRangoTabular(seriePath string, mediciones []tipos.Medicion) *
 			Tiempos: tiempos,
 			Valores: valores,
 		},
+	}
+}
+
+// crearRespuestaPuntoColumnar es un helper para crear respuestas de punto en formato columnar
+func crearRespuestaPuntoColumnar(seriePath string, tiempo int64, valor interface{}) *tipos.RespuestaConsultaPunto {
+	return &tipos.RespuestaConsultaPunto{
+		Resultado: tipos.ResultadoConsultaPunto{
+			Series:  []string{seriePath},
+			Tiempos: []int64{tiempo},
+			Valores: []interface{}{valor},
+		},
+	}
+}
+
+// crearRespuestaPuntoVacia crea una respuesta de punto vacía (sin datos)
+func crearRespuestaPuntoVacia() *tipos.RespuestaConsultaPunto {
+	return &tipos.RespuestaConsultaPunto{
+		Resultado: tipos.ResultadoConsultaPunto{},
 	}
 }
 
@@ -565,11 +583,7 @@ func TestBuscarSeriesPorPath_MultiplesNodos(t *testing.T) {
 // TestConsultarUltimoPuntoEdge_Exitoso verifica consulta exitosa al edge
 func TestConsultarUltimoPuntoEdge_Exitoso(t *testing.T) {
 	mockEdge := &mockClienteEdge{
-		respuestaPunto: &tipos.RespuestaConsultaPunto{
-			Medicion:   tipos.Medicion{Tiempo: 1000, Valor: 25.5},
-			Encontrado: true,
-			Error:      "",
-		},
+		respuestaPunto: crearRespuestaPuntoColumnar("/sensores/temp", 1000, 25.5),
 	}
 
 	m := &ManagerDespachador{
@@ -582,22 +596,20 @@ func TestConsultarUltimoPuntoEdge_Exitoso(t *testing.T) {
 		PuertoHTTP:  "8080",
 	}
 
-	medicion, encontrado, err := m.consultarPuntoEdge(nodo, "/sensores/temp", "ultimo", 5*time.Second)
+	resultado, err := m.consultarPuntoEdge(nodo, "/sensores/temp", 5*time.Second)
 
 	assert.NoError(t, err)
-	assert.True(t, encontrado)
-	assert.Equal(t, int64(1000), medicion.Tiempo)
-	assert.Equal(t, 25.5, medicion.Valor)
-	t.Log("consultarPuntoEdge retorna medicion correctamente")
+	require.Len(t, resultado.Series, 1)
+	assert.Equal(t, "/sensores/temp", resultado.Series[0])
+	assert.Equal(t, int64(1000), resultado.Tiempos[0])
+	assert.Equal(t, 25.5, resultado.Valores[0])
+	t.Log("consultarPuntoEdge retorna resultado columnar correctamente")
 }
 
-// TestConsultarUltimoPuntoEdge_NoEncontrado verifica cuando no hay datos
-func TestConsultarUltimoPuntoEdge_NoEncontrado(t *testing.T) {
+// TestConsultarUltimoPuntoEdge_SinDatos verifica cuando no hay datos
+func TestConsultarUltimoPuntoEdge_SinDatos(t *testing.T) {
 	mockEdge := &mockClienteEdge{
-		respuestaPunto: &tipos.RespuestaConsultaPunto{
-			Encontrado: false,
-			Error:      "",
-		},
+		respuestaPunto: crearRespuestaPuntoVacia(),
 	}
 
 	m := &ManagerDespachador{
@@ -610,11 +622,11 @@ func TestConsultarUltimoPuntoEdge_NoEncontrado(t *testing.T) {
 		PuertoHTTP:  "8080",
 	}
 
-	_, encontrado, err := m.consultarPuntoEdge(nodo, "/sensores/temp", "ultimo", 5*time.Second)
+	resultado, err := m.consultarPuntoEdge(nodo, "/sensores/temp", 5*time.Second)
 
 	assert.NoError(t, err)
-	assert.False(t, encontrado)
-	t.Log("consultarPuntoEdge retorna encontrado=false cuando no hay datos")
+	assert.Empty(t, resultado.Series)
+	t.Log("consultarPuntoEdge retorna resultado vacío cuando no hay datos")
 }
 
 // TestConsultarUltimoPuntoEdge_ErrorConexion verifica manejo de error de conexion
@@ -633,7 +645,7 @@ func TestConsultarUltimoPuntoEdge_ErrorConexion(t *testing.T) {
 		PuertoHTTP:  "8080",
 	}
 
-	_, _, err := m.consultarPuntoEdge(nodo, "/sensores/temp", "ultimo", 5*time.Second)
+	_, err := m.consultarPuntoEdge(nodo, "/sensores/temp", 5*time.Second)
 
 	assert.Error(t, err)
 	t.Log("consultarPuntoEdge retorna error cuando hay falla de conexion")
@@ -657,38 +669,11 @@ func TestConsultarUltimoPuntoEdge_ErrorDelEdge(t *testing.T) {
 		PuertoHTTP:  "8080",
 	}
 
-	_, _, err := m.consultarPuntoEdge(nodo, "/sensores/temp", "ultimo", 5*time.Second)
+	_, err := m.consultarPuntoEdge(nodo, "/sensores/temp", 5*time.Second)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "serie no encontrada")
 	t.Log("consultarPuntoEdge retorna error cuando el edge reporta error")
-}
-
-// TestConsultarUltimoPuntoEdge_TipoPrimero verifica consulta de primer punto
-func TestConsultarUltimoPuntoEdge_TipoPrimero(t *testing.T) {
-	mockEdge := &mockClienteEdge{
-		respuestaPunto: &tipos.RespuestaConsultaPunto{
-			Medicion:   tipos.Medicion{Tiempo: 500, Valor: 10.0},
-			Encontrado: true,
-		},
-	}
-
-	m := &ManagerDespachador{
-		clienteEdge: mockEdge,
-	}
-
-	nodo := tipos.Nodo{
-		NodoID:      "nodo1",
-		DireccionIP: "192.168.1.100",
-		PuertoHTTP:  "8080",
-	}
-
-	medicion, encontrado, err := m.consultarPuntoEdge(nodo, "/sensores/temp", "primero", 5*time.Second)
-
-	assert.NoError(t, err)
-	assert.True(t, encontrado)
-	assert.Equal(t, int64(500), medicion.Tiempo)
-	t.Log("consultarPuntoEdge funciona con tipo 'primero'")
 }
 
 // ============================================================================
@@ -1179,10 +1164,7 @@ func TestConsultarUltimoPunto_SerieNoEncontrada(t *testing.T) {
 // TestConsultarUltimoPunto_DesdEdge verifica que retorna dato del edge cuando esta disponible
 func TestConsultarUltimoPunto_DesdeEdge(t *testing.T) {
 	mockEdge := &mockClienteEdge{
-		respuestaPunto: &tipos.RespuestaConsultaPunto{
-			Medicion:   tipos.Medicion{Tiempo: 5000, Valor: 50.0},
-			Encontrado: true,
-		},
+		respuestaPunto: crearRespuestaPuntoColumnar("/sensores/temp", 5000, 50.0),
 	}
 
 	m := &ManagerDespachador{
@@ -1199,12 +1181,14 @@ func TestConsultarUltimoPunto_DesdeEdge(t *testing.T) {
 		clienteEdge: mockEdge,
 	}
 
-	medicion, err := m.ConsultarUltimoPunto("/sensores/temp")
+	resultado, err := m.ConsultarUltimoPunto("/sensores/temp")
 
 	assert.NoError(t, err)
-	assert.Equal(t, int64(5000), medicion.Tiempo)
-	assert.Equal(t, 50.0, medicion.Valor)
-	t.Log("ConsultarUltimoPunto retorna dato del edge")
+	require.Len(t, resultado.Series, 1)
+	assert.Equal(t, "/sensores/temp", resultado.Series[0])
+	assert.Equal(t, int64(5000), resultado.Tiempos[0])
+	assert.Equal(t, 50.0, resultado.Valores[0])
+	t.Log("ConsultarUltimoPunto retorna dato del edge en formato columnar")
 }
 
 // TestConsultarUltimoPunto_EdgeOffline_SinDatosS3 verifica error cuando no hay datos
@@ -1420,11 +1404,13 @@ func TestClienteEdgeHTTP_ConsultarRango_ErrorDeserializacion(t *testing.T) {
 
 // TestClienteEdgeHTTP_ConsultarUltimoPunto_Exitoso verifica consulta de punto via HTTP
 func TestClienteEdgeHTTP_ConsultarUltimoPunto_Exitoso(t *testing.T) {
-	// Crear respuesta esperada
+	// Crear respuesta esperada en formato columnar
 	respuestaEsperada := tipos.RespuestaConsultaPunto{
-		Medicion:   tipos.Medicion{Tiempo: 5000, Valor: 50.0},
-		Encontrado: true,
-		Error:      "",
+		Resultado: tipos.ResultadoConsultaPunto{
+			Series:  []string{"/sensores/temp"},
+			Tiempos: []int64{5000},
+			Valores: []interface{}{50.0},
+		},
 	}
 
 	respuestaBytes, err := tipos.SerializarGob(respuestaEsperada)
@@ -1446,42 +1432,14 @@ func TestClienteEdgeHTTP_ConsultarUltimoPunto_Exitoso(t *testing.T) {
 		Serie: "/sensores/temp",
 	}
 
-	respuesta, err := cliente.ConsultarUltimoPunto(context.Background(), direccion, solicitud, "ultimo")
+	respuesta, err := cliente.ConsultarUltimoPunto(context.Background(), direccion, solicitud)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, respuesta)
-	assert.True(t, respuesta.Encontrado)
-	assert.Equal(t, int64(5000), respuesta.Medicion.Tiempo)
+	require.Len(t, respuesta.Resultado.Series, 1)
+	assert.Equal(t, "/sensores/temp", respuesta.Resultado.Series[0])
+	assert.Equal(t, int64(5000), respuesta.Resultado.Tiempos[0])
 	t.Log("clienteEdgeHTTP.ConsultarUltimoPunto funciona correctamente")
-}
-
-// TestClienteEdgeHTTP_ConsultarUltimoPunto_TipoPrimero verifica URL correcta para primer punto
-func TestClienteEdgeHTTP_ConsultarUltimoPunto_TipoPrimero(t *testing.T) {
-	respuestaEsperada := tipos.RespuestaConsultaPunto{
-		Medicion:   tipos.Medicion{Tiempo: 100, Valor: 1.0},
-		Encontrado: true,
-	}
-
-	respuestaBytes, _ := tipos.SerializarGob(respuestaEsperada)
-
-	servidor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verificar que usa la URL correcta para "primero"
-		assert.True(t, strings.HasSuffix(r.URL.Path, "/api/consulta/primero"))
-
-		w.WriteHeader(http.StatusOK)
-		w.Write(respuestaBytes)
-	}))
-	defer servidor.Close()
-
-	cliente := nuevoClienteEdgeHTTP()
-	direccion := strings.TrimPrefix(servidor.URL, "http://")
-
-	solicitud := tipos.SolicitudConsultaPunto{Serie: "/sensores/temp"}
-	respuesta, err := cliente.ConsultarUltimoPunto(context.Background(), direccion, solicitud, "primero")
-
-	assert.NoError(t, err)
-	assert.Equal(t, int64(100), respuesta.Medicion.Tiempo)
-	t.Log("clienteEdgeHTTP.ConsultarUltimoPunto usa URL correcta para tipo 'primero'")
 }
 
 // TestClienteEdgeHTTP_ConsultarUltimoPunto_ErrorHTTP verifica manejo de error HTTP
@@ -1496,7 +1454,7 @@ func TestClienteEdgeHTTP_ConsultarUltimoPunto_ErrorHTTP(t *testing.T) {
 	direccion := strings.TrimPrefix(servidor.URL, "http://")
 
 	solicitud := tipos.SolicitudConsultaPunto{Serie: "/sensores/noexiste"}
-	_, err := cliente.ConsultarUltimoPunto(context.Background(), direccion, solicitud, "ultimo")
+	_, err := cliente.ConsultarUltimoPunto(context.Background(), direccion, solicitud)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "404")
@@ -1508,7 +1466,7 @@ func TestClienteEdgeHTTP_ConsultarUltimoPunto_ErrorConexion(t *testing.T) {
 	cliente := nuevoClienteEdgeHTTP()
 
 	solicitud := tipos.SolicitudConsultaPunto{Serie: "/sensores/temp"}
-	_, err := cliente.ConsultarUltimoPunto(context.Background(), "localhost:99999", solicitud, "ultimo")
+	_, err := cliente.ConsultarUltimoPunto(context.Background(), "localhost:99999", solicitud)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "error en request HTTP")
@@ -1668,11 +1626,9 @@ func TestConsultarUltimoPunto_DesdeS3(t *testing.T) {
 
 	bloqueComprimido := crearBloqueComprimidoTest(t, mediciones, tipos.Integer, tipos.DeltaDelta, tipos.Ninguna)
 
-	// Mock edge que no encuentra datos
+	// Mock edge que no encuentra datos (retorna resultado vacío)
 	mockEdge := &mockClienteEdge{
-		respuestaPunto: &tipos.RespuestaConsultaPunto{
-			Encontrado: false,
-		},
+		respuestaPunto: crearRespuestaPuntoVacia(),
 	}
 
 	mockS3 := &mockClienteS3{
@@ -1706,12 +1662,14 @@ func TestConsultarUltimoPunto_DesdeS3(t *testing.T) {
 		config:      tipos.ConfiguracionS3{Bucket: "test-bucket"},
 	}
 
-	medicion, err := m.ConsultarUltimoPunto("/sensores/temp")
+	resultado, err := m.ConsultarUltimoPunto("/sensores/temp")
 
 	assert.NoError(t, err)
-	// Debe retornar la ultima medicion del bloque (3000, 30)
-	assert.Equal(t, int64(3000), medicion.Tiempo)
-	assert.Equal(t, int64(30), medicion.Valor)
+	// Debe retornar la última medición del bloque en formato columnar
+	require.Len(t, resultado.Series, 1)
+	assert.Equal(t, "/sensores/temp", resultado.Series[0])
+	assert.Equal(t, int64(3000), resultado.Tiempos[0])
+	assert.Equal(t, int64(30), resultado.Valores[0])
 	t.Log("ConsultarUltimoPunto hace fallback a S3 correctamente")
 }
 

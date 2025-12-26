@@ -16,9 +16,18 @@ type SolicitudConsultaRango struct {
 	TiempoFin    int64 // Unix nanosegundos
 }
 
-// SolicitudConsultaPunto representa una solicitud de primer/último punto
+// SolicitudConsultaPunto representa una solicitud de último punto
 type SolicitudConsultaPunto struct {
 	Serie string
+}
+
+// ResultadoConsultaPunto representa el último punto de múltiples series en formato columnar.
+// Cada serie tiene su último punto (timestamp y valor).
+// Series sin datos son excluidas del resultado.
+type ResultadoConsultaPunto struct {
+	Series  []string      // Nombres de series ordenados alfabéticamente
+	Tiempos []int64       // Timestamp del punto por serie (Unix nanosegundos)
+	Valores []interface{} // Valor del punto por serie
 }
 
 // ResultadoConsultaRango representa el resultado de una consulta de rango en formato tabular.
@@ -36,11 +45,10 @@ type RespuestaConsultaRango struct {
 	Error     string
 }
 
-// RespuestaConsultaPunto respuesta con una medición
+// RespuestaConsultaPunto respuesta con resultado de consulta de último punto en formato columnar
 type RespuestaConsultaPunto struct {
-	Medicion   Medicion
-	Encontrado bool
-	Error      string
+	Resultado ResultadoConsultaPunto
+	Error     string
 }
 
 // SolicitudConsultaAgregacion representa una solicitud de agregación simple
@@ -109,6 +117,7 @@ func init() {
 	gob.Register(SolicitudConsultaRango{})
 	gob.Register(SolicitudConsultaPunto{})
 	gob.Register(ResultadoConsultaRango{})
+	gob.Register(ResultadoConsultaPunto{})
 	gob.Register(RespuestaConsultaRango{})
 	gob.Register(RespuestaConsultaPunto{})
 

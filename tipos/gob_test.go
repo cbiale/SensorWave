@@ -192,6 +192,120 @@ func TestSerializarDeserializarGob_SolicitudConsultaPunto(t *testing.T) {
 	t.Log("✓ SolicitudConsultaPunto serializada/deserializada correctamente")
 }
 
+// TestSerializarDeserializarGob_ResultadoConsultaPunto verifica serialización de ResultadoConsultaPunto
+func TestSerializarDeserializarGob_ResultadoConsultaPunto(t *testing.T) {
+	ahora := time.Now().UnixNano()
+	original := ResultadoConsultaPunto{
+		Series:  []string{"sensor1/temp", "sensor2/temp", "sensor3/temp"},
+		Tiempos: []int64{ahora, ahora - 1000, ahora - 2000},
+		Valores: []interface{}{25.5, 26.0, 24.8},
+	}
+
+	data, err := SerializarGob(original)
+	if err != nil {
+		t.Fatalf("Error al serializar ResultadoConsultaPunto: %v", err)
+	}
+
+	var deserializado ResultadoConsultaPunto
+	err = DeserializarGob(data, &deserializado)
+	if err != nil {
+		t.Fatalf("Error al deserializar ResultadoConsultaPunto: %v", err)
+	}
+
+	// Verificar series
+	if len(deserializado.Series) != len(original.Series) {
+		t.Errorf("Cantidad de series incorrecta: esperadas %d, obtenidas %d",
+			len(original.Series), len(deserializado.Series))
+	}
+	for i, serie := range deserializado.Series {
+		if serie != original.Series[i] {
+			t.Errorf("Serie %d incorrecta: esperada %s, obtenida %s", i, original.Series[i], serie)
+		}
+	}
+
+	// Verificar tiempos
+	if len(deserializado.Tiempos) != len(original.Tiempos) {
+		t.Errorf("Cantidad de tiempos incorrecta: esperados %d, obtenidos %d",
+			len(original.Tiempos), len(deserializado.Tiempos))
+	}
+	for i, tiempo := range deserializado.Tiempos {
+		if tiempo != original.Tiempos[i] {
+			t.Errorf("Tiempo %d incorrecto: esperado %d, obtenido %d", i, original.Tiempos[i], tiempo)
+		}
+	}
+
+	// Verificar valores
+	if len(deserializado.Valores) != len(original.Valores) {
+		t.Errorf("Cantidad de valores incorrecta: esperados %d, obtenidos %d",
+			len(original.Valores), len(deserializado.Valores))
+	}
+
+	t.Logf("✓ ResultadoConsultaPunto con %d series serializado correctamente", len(deserializado.Series))
+}
+
+// TestSerializarDeserializarGob_RespuestaConsultaPunto verifica serialización de respuesta punto
+func TestSerializarDeserializarGob_RespuestaConsultaPunto(t *testing.T) {
+	ahora := time.Now().UnixNano()
+	original := RespuestaConsultaPunto{
+		Resultado: ResultadoConsultaPunto{
+			Series:  []string{"sensor/temp"},
+			Tiempos: []int64{ahora},
+			Valores: []interface{}{25.5},
+		},
+		Error: "",
+	}
+
+	data, err := SerializarGob(original)
+	if err != nil {
+		t.Fatalf("Error al serializar RespuestaConsultaPunto: %v", err)
+	}
+
+	var deserializada RespuestaConsultaPunto
+	err = DeserializarGob(data, &deserializada)
+	if err != nil {
+		t.Fatalf("Error al deserializar RespuestaConsultaPunto: %v", err)
+	}
+
+	if len(deserializada.Resultado.Series) != 1 {
+		t.Errorf("Cantidad de series incorrecta: esperada 1, obtenida %d", len(deserializada.Resultado.Series))
+	}
+
+	if deserializada.Resultado.Series[0] != "sensor/temp" {
+		t.Errorf("Serie incorrecta: esperada sensor/temp, obtenida %s", deserializada.Resultado.Series[0])
+	}
+
+	t.Log("✓ RespuestaConsultaPunto serializada/deserializada correctamente")
+}
+
+// TestSerializarDeserializarGob_RespuestaConsultaPuntoConError verifica respuesta con error
+func TestSerializarDeserializarGob_RespuestaConsultaPuntoConError(t *testing.T) {
+	original := RespuestaConsultaPunto{
+		Resultado: ResultadoConsultaPunto{},
+		Error:     "no hay datos para la serie",
+	}
+
+	data, err := SerializarGob(original)
+	if err != nil {
+		t.Fatalf("Error al serializar RespuestaConsultaPunto con error: %v", err)
+	}
+
+	var deserializada RespuestaConsultaPunto
+	err = DeserializarGob(data, &deserializada)
+	if err != nil {
+		t.Fatalf("Error al deserializar RespuestaConsultaPunto con error: %v", err)
+	}
+
+	if deserializada.Error != original.Error {
+		t.Errorf("Error incorrecto: esperado '%s', obtenido '%s'", original.Error, deserializada.Error)
+	}
+
+	if len(deserializada.Resultado.Series) != 0 {
+		t.Errorf("Series deberían estar vacías, obtenidas %d", len(deserializada.Resultado.Series))
+	}
+
+	t.Log("✓ RespuestaConsultaPunto con error serializada correctamente")
+}
+
 // TestSerializarDeserializarGob_RespuestaConsultaRango verifica respuesta con resultado tabular
 func TestSerializarDeserializarGob_RespuestaConsultaRango(t *testing.T) {
 	ahora := time.Now().UnixNano()

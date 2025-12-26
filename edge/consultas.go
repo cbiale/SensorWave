@@ -185,39 +185,63 @@ func (me *ManagerEdge) consultarRangoSerie(serie tipos.Serie, tiempoInicio, tiem
 	return resultados, nil
 }
 
-// ConsultarUltimoPunto obtiene la última medición registrada para una o más series.
+// ConsultarUltimoPunto obtiene la última medición de cada serie que coincida con el patrón.
 // El parámetro path puede ser:
 //   - Path exacto: "sensor_01/temperatura"
 //   - Patrón con wildcard: "sensor_*/temperatura" o "*/temperatura"
 //
-// Si se usa wildcard, retorna la medición más reciente entre todas las series que coincidan.
-func (me *ManagerEdge) ConsultarUltimoPunto(path string) (tipos.Medicion, error) {
+// Retorna el último punto de CADA serie en formato columnar.
+// Las series sin datos son excluidas del resultado.
+func (me *ManagerEdge) ConsultarUltimoPunto(path string) (tipos.ResultadoConsultaPunto, error) {
 	// Resolver series (path exacto o patrón wildcard)
 	series, err := me.resolverSeries(path)
 	if err != nil {
-		return tipos.Medicion{}, err
+		return tipos.ResultadoConsultaPunto{}, err
 	}
 
-	// Encontrar la medición más reciente entre todas las series
-	var ultimaMedicion tipos.Medicion
-	encontrado := false
+	// Recolectar último punto de cada serie
+	type puntoSerie struct {
+		path   string
+		tiempo int64
+		valor  interface{}
+	}
+	var puntos []puntoSerie
 
 	for _, serie := range series {
 		medicion, err := me.consultarUltimoPuntoSerie(serie)
 		if err != nil {
 			continue // Ignorar series sin datos
 		}
-		if !encontrado || medicion.Tiempo > ultimaMedicion.Tiempo {
-			ultimaMedicion = medicion
-			encontrado = true
-		}
+		puntos = append(puntos, puntoSerie{
+			path:   serie.Path,
+			tiempo: medicion.Tiempo,
+			valor:  medicion.Valor,
+		})
 	}
 
-	if !encontrado {
-		return tipos.Medicion{}, fmt.Errorf("no hay mediciones para el patrón: %s", path)
+	if len(puntos) == 0 {
+		return tipos.ResultadoConsultaPunto{}, fmt.Errorf("no hay mediciones para el patrón: %s", path)
 	}
 
-	return ultimaMedicion, nil
+	// Ordenar alfabéticamente por path
+	sort.Slice(puntos, func(i, j int) bool {
+		return puntos[i].path < puntos[j].path
+	})
+
+	// Construir resultado columnar
+	resultado := tipos.ResultadoConsultaPunto{
+		Series:  make([]string, len(puntos)),
+		Tiempos: make([]int64, len(puntos)),
+		Valores: make([]interface{}, len(puntos)),
+	}
+
+	for i, p := range puntos {
+		resultado.Series[i] = p.path
+		resultado.Tiempos[i] = p.tiempo
+		resultado.Valores[i] = p.valor
+	}
+
+	return resultado, nil
 }
 
 // consultarUltimoPuntoSerie obtiene la última medición de una serie específica

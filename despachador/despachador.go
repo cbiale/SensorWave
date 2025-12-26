@@ -50,9 +50,8 @@ type clienteEdge interface {
 	// ConsultarRango consulta mediciones en un rango de tiempo (formato tabular)
 	ConsultarRango(ctx context.Context, direccion string, req tipos.SolicitudConsultaRango) (*tipos.RespuestaConsultaRango, error)
 
-	// ConsultarUltimoPunto consulta el primer o último punto de una serie
-	// tipo debe ser "primero" o "ultimo"
-	ConsultarUltimoPunto(ctx context.Context, direccion string, req tipos.SolicitudConsultaPunto, tipo string) (*tipos.RespuestaConsultaPunto, error)
+	// ConsultarUltimoPunto consulta el último punto de una o más series
+	ConsultarUltimoPunto(ctx context.Context, direccion string, req tipos.SolicitudConsultaPunto) (*tipos.RespuestaConsultaPunto, error)
 
 	// ConsultarAgregacion consulta una agregación simple (promedio, min, max, etc.)
 	ConsultarAgregacion(ctx context.Context, direccion string, req tipos.SolicitudConsultaAgregacion) (*tipos.RespuestaConsultaAgregacion, error)
@@ -121,15 +120,15 @@ func (c *clienteEdgeHTTP) ConsultarRango(ctx context.Context, direccion string, 
 }
 
 // ConsultarUltimoPunto implementa clienteEdge
-func (c *clienteEdgeHTTP) ConsultarUltimoPunto(ctx context.Context, direccion string, req tipos.SolicitudConsultaPunto, tipo string) (*tipos.RespuestaConsultaPunto, error) {
+func (c *clienteEdgeHTTP) ConsultarUltimoPunto(ctx context.Context, direccion string, req tipos.SolicitudConsultaPunto) (*tipos.RespuestaConsultaPunto, error) {
 	// Serializar solicitud con Gob
 	solicitudBytes, err := tipos.SerializarGob(req)
 	if err != nil {
 		return nil, fmt.Errorf("error serializando solicitud: %v", err)
 	}
 
-	// Construir URL según tipo
-	url := fmt.Sprintf("http://%s/api/consulta/%s", direccion, tipo)
+	// Construir URL
+	url := fmt.Sprintf("http://%s/api/consulta/ultimo", direccion)
 
 	// Crear request con contexto
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(solicitudBytes))
@@ -439,9 +438,9 @@ func obtenerDireccionEdge(nodo tipos.Nodo) string {
 	return fmt.Sprintf("%s:%s", nodo.DireccionIP, nodo.PuertoHTTP)
 }
 
-// consultarPuntoEdge consulta un punto (primero o último) al edge con timeout
-// Retorna la medición, si se encontró, y error si hubo problemas
-func (m *ManagerDespachador) consultarPuntoEdge(nodo tipos.Nodo, nombreSerie, tipoConsulta string, timeout time.Duration) (tipos.Medicion, bool, error) {
+// consultarPuntoEdge consulta el último punto al edge con timeout
+// Retorna el resultado columnar y error si hubo problemas
+func (m *ManagerDespachador) consultarPuntoEdge(nodo tipos.Nodo, nombreSerie string, timeout time.Duration) (tipos.ResultadoConsultaPunto, error) {
 	solicitud := tipos.SolicitudConsultaPunto{
 		Serie: nombreSerie,
 	}
@@ -450,16 +449,16 @@ func (m *ManagerDespachador) consultarPuntoEdge(nodo tipos.Nodo, nombreSerie, ti
 	defer cancel()
 
 	direccion := obtenerDireccionEdge(nodo)
-	respuesta, err := m.clienteEdge.ConsultarUltimoPunto(ctx, direccion, solicitud, tipoConsulta)
+	respuesta, err := m.clienteEdge.ConsultarUltimoPunto(ctx, direccion, solicitud)
 	if err != nil {
-		return tipos.Medicion{}, false, err
+		return tipos.ResultadoConsultaPunto{}, err
 	}
 
 	if respuesta.Error != "" {
-		return tipos.Medicion{}, false, fmt.Errorf("error del edge: %s", respuesta.Error)
+		return tipos.ResultadoConsultaPunto{}, fmt.Errorf("error del edge: %s", respuesta.Error)
 	}
 
-	return respuesta.Medicion, respuesta.Encontrado, nil
+	return respuesta.Resultado, nil
 }
 
 // descargarYDescomprimirBloque descarga un bloque de S3 y lo descomprime
@@ -809,75 +808,119 @@ func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, ti
 	return m.combinarResultadosTabulares(todosResultados), nil
 }
 
-// ConsultarUltimoPunto busca el último punto combinando S3 y edge.
+// ConsultarUltimoPunto busca el último punto de cada serie combinando S3 y edge.
 // Soporta wildcards en el path de la serie (ej: */temp, sensor_01/*).
-// Si se usa wildcard, retorna la medición más reciente entre todas las series que coincidan.
-func (m *ManagerDespachador) ConsultarUltimoPunto(nombreSerie string) (tipos.Medicion, error) {
+// Retorna el último punto de CADA serie en formato columnar.
+// Las series sin datos son excluidas del resultado.
+func (m *ManagerDespachador) ConsultarUltimoPunto(nombreSerie string) (tipos.ResultadoConsultaPunto, error) {
 	// Buscar todas las series que coincidan (path exacto o wildcard)
 	seriesEncontradas, err := m.buscarSeriesPorPath(nombreSerie)
 	if err != nil {
-		return tipos.Medicion{}, err
+		return tipos.ResultadoConsultaPunto{}, err
 	}
 
 	// Canal para recoger resultados de todas las consultas
 	type resultadoSerie struct {
-		medicion   tipos.Medicion
-		encontrado bool
-		path       string
+		path   string
+		tiempo int64
+		valor  interface{}
+		ok     bool
 	}
 	resultados := make(chan resultadoSerie, len(seriesEncontradas))
 
 	// Consultar cada serie en paralelo
 	for _, sn := range seriesEncontradas {
 		go func(sn serieConNodo) {
-			var medicion tipos.Medicion
+			var tiempo int64
+			var valor interface{}
 			encontrado := false
 
 			// Primero intentar con el edge (tiene datos más recientes)
-			med, enc, err := m.consultarPuntoEdge(sn.nodo, sn.path, "ultimo", 5*time.Second)
-			if err == nil && enc {
-				medicion = med
-				encontrado = true
-			} else {
-				// Si el edge no responde, buscar en S3 el bloque más reciente
+			resEdge, err := m.consultarPuntoEdge(sn.nodo, sn.path, 5*time.Second)
+			if err == nil && len(resEdge.Series) > 0 {
+				// El edge retorna formato columnar, buscar nuestra serie
+				for i, s := range resEdge.Series {
+					if s == sn.path {
+						tiempo = resEdge.Tiempos[i]
+						valor = resEdge.Valores[i]
+						encontrado = true
+						break
+					}
+				}
+			}
+
+			// Si el edge no responde o no tiene datos, buscar en S3 el bloque más reciente
+			if !encontrado {
 				bloques, err := m.listarBloquesEnRango(sn.nodo.NodoID, sn.serie.SerieId, 0, time.Now().UnixNano())
 				if err == nil && len(bloques) > 0 {
 					ultimoBloque := bloques[len(bloques)-1]
 					mediciones, err := m.descargarYDescomprimirBloque(ultimoBloque, sn.serie)
 					if err == nil && len(mediciones) > 0 {
-						medicion = mediciones[len(mediciones)-1]
+						// Encontrar la medición más reciente
+						ultimaMed := mediciones[0]
+						for _, med := range mediciones[1:] {
+							if med.Tiempo > ultimaMed.Tiempo {
+								ultimaMed = med
+							}
+						}
+						tiempo = ultimaMed.Tiempo
+						valor = ultimaMed.Valor
 						encontrado = true
 					}
 				}
 			}
 
 			resultados <- resultadoSerie{
-				medicion:   medicion,
-				encontrado: encontrado,
-				path:       sn.path,
+				path:   sn.path,
+				tiempo: tiempo,
+				valor:  valor,
+				ok:     encontrado,
 			}
 		}(sn)
 	}
 
-	// Recoger todos los resultados y encontrar la medición más reciente
-	var ultimaMedicion tipos.Medicion
-	hayResultados := false
+	// Recolectar resultados
+	type puntoSerie struct {
+		path   string
+		tiempo int64
+		valor  interface{}
+	}
+	var puntos []puntoSerie
 
 	for i := 0; i < len(seriesEncontradas); i++ {
 		res := <-resultados
-		if res.encontrado {
-			if !hayResultados || res.medicion.Tiempo > ultimaMedicion.Tiempo {
-				ultimaMedicion = res.medicion
-				hayResultados = true
-			}
+		if res.ok {
+			puntos = append(puntos, puntoSerie{
+				path:   res.path,
+				tiempo: res.tiempo,
+				valor:  res.valor,
+			})
 		}
 	}
 
-	if !hayResultados {
-		return tipos.Medicion{}, fmt.Errorf("no se encontraron datos para la serie %s", nombreSerie)
+	if len(puntos) == 0 {
+		return tipos.ResultadoConsultaPunto{}, fmt.Errorf("no se encontraron datos para la serie %s", nombreSerie)
 	}
 
-	return ultimaMedicion, nil
+	// Ordenar alfabéticamente por path
+	sort.Slice(puntos, func(i, j int) bool {
+		return puntos[i].path < puntos[j].path
+	})
+
+	// Construir resultado columnar
+	resultado := tipos.ResultadoConsultaPunto{
+		Series:  make([]string, len(puntos)),
+		Tiempos: make([]int64, len(puntos)),
+		Valores: make([]interface{}, len(puntos)),
+	}
+
+	for i, p := range puntos {
+		resultado.Series[i] = p.path
+		resultado.Tiempos[i] = p.tiempo
+		resultado.Valores[i] = p.valor
+	}
+
+	return resultado, nil
 }
 
 // ============================================================================

@@ -180,6 +180,8 @@ func Crear(opts Opciones) (*ManagerEdge, error) {
 			if err != nil {
 				log.Printf("Advertencia: error registrando nodo en S3: %v", err)
 			}
+			// Iniciar limpieza automática de S3 (eliminaciones pendientes)
+			manager.IniciarLimpiezaS3Automatica()
 		}
 	} else {
 		log.Printf("Modo local: sin registro en nube ni servidor HTTP")
@@ -648,4 +650,93 @@ func (me *ManagerEdge) ListarReglas() map[string]*Regla {
 
 func (me *ManagerEdge) HabilitarMotorReglas(habilitado bool) {
 	me.MotorReglas.Habilitar(habilitado)
+}
+
+// EliminarSerie elimina una serie y todos sus datos asociados.
+// Elimina: metadatos, bloques de datos locales, cache y buffer.
+// Si S3 está configurado, registra la eliminación pendiente y la procesa (best-effort).
+// La eliminación local siempre se completa; la eliminación de S3 se reintentará automáticamente.
+func (me *ManagerEdge) EliminarSerie(path string) error {
+	// Verificar que la serie existe
+	me.cache.mu.RLock()
+	serie, existe := me.cache.datos[path]
+	me.cache.mu.RUnlock()
+
+	if !existe {
+		return fmt.Errorf("serie no encontrada: %s", path)
+	}
+
+	serieId := serie.SerieId
+
+	// 1. Si S3 está configurado, guardar eliminación pendiente ANTES de eliminar localmente
+	// Esto garantiza que si el sistema falla, la eliminación de S3 se reintentará
+	if clienteS3 != nil {
+		if err := me.guardarEliminacionPendiente(serieId, path); err != nil {
+			log.Printf("Advertencia: error guardando eliminación pendiente: %v", err)
+			// Continuamos con la eliminación local de todas formas
+		}
+	}
+
+	// 2. Cerrar el buffer y su goroutine
+	if bufferInterface, ok := me.buffers.Load(path); ok {
+		buffer := bufferInterface.(*SerieBuffer)
+
+		// Señalar al goroutine que termine
+		close(buffer.done)
+
+		// Vaciar el canal para evitar bloqueos
+		close(buffer.datosCanal)
+		for range buffer.datosCanal {
+			// Drenar el canal
+		}
+
+		// Eliminar del mapa de buffers
+		me.buffers.Delete(path)
+	}
+
+	// 3. Eliminar todos los bloques de datos de PebbleDB
+	prefijoDatos := fmt.Sprintf("data/%010d/", serieId)
+
+	iter, err := me.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte(prefijoDatos),
+		UpperBound: []byte(fmt.Sprintf("data/%010d0", serieId)), // Siguiente serie
+	})
+	if err != nil {
+		return fmt.Errorf("error al crear iterador para datos: %v", err)
+	}
+
+	// Recolectar claves a eliminar
+	var clavesAEliminar [][]byte
+	for iter.First(); iter.Valid(); iter.Next() {
+		clave := make([]byte, len(iter.Key()))
+		copy(clave, iter.Key())
+		clavesAEliminar = append(clavesAEliminar, clave)
+	}
+	iter.Close()
+
+	// Eliminar bloques de datos
+	for _, clave := range clavesAEliminar {
+		if err := me.db.Delete(clave, pebble.Sync); err != nil {
+			log.Printf("Advertencia: error al eliminar bloque %s: %v", string(clave), err)
+		}
+	}
+
+	// 4. Eliminar metadatos de la serie
+	claveSerie := []byte("series/" + path)
+	if err := me.db.Delete(claveSerie, pebble.Sync); err != nil {
+		return fmt.Errorf("error al eliminar metadatos de serie: %v", err)
+	}
+
+	// 5. Eliminar del cache
+	me.cache.mu.Lock()
+	delete(me.cache.datos, path)
+	me.cache.mu.Unlock()
+
+	log.Printf("Serie eliminada localmente: %s (ID: %d, bloques eliminados: %d)", path, serieId, len(clavesAEliminar))
+
+	// La eliminación de S3 se procesa automáticamente vía IniciarLimpiezaS3Automatica()
+	// que ejecuta ProcesarEliminacionesPendientes() cada 5 minutos.
+	// La eliminación pendiente ya fue registrada en el paso 1 (si S3 estaba configurado).
+
+	return nil
 }

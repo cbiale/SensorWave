@@ -4,15 +4,11 @@ package tipos
 type TipoAgregacion string
 
 const (
-	AgregacionPromedio  TipoAgregacion = "promedio"
-	AgregacionMaximo    TipoAgregacion = "maximo"
-	AgregacionMinimo    TipoAgregacion = "minimo"
-	AgregacionSuma      TipoAgregacion = "suma"
-	AgregacionCount     TipoAgregacion = "count"
-	AgregacionFirst     TipoAgregacion = "first"      // Primer valor (más antiguo)
-	AgregacionLast      TipoAgregacion = "last"       // Último valor (más reciente)
-	AgregacionFirstTime TipoAgregacion = "first_time" // Timestamp del primer valor
-	AgregacionLastTime  TipoAgregacion = "last_time"  // Timestamp del último valor
+	AgregacionPromedio TipoAgregacion = "promedio"
+	AgregacionMaximo   TipoAgregacion = "maximo"
+	AgregacionMinimo   TipoAgregacion = "minimo"
+	AgregacionSuma     TipoAgregacion = "suma"
+	AgregacionCount    TipoAgregacion = "count"
 )
 
 // ResultadoAgregacionTemporal representa el resultado de agregaciones temporales en formato matricial.

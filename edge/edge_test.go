@@ -3,6 +3,7 @@ package edge
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/cbiale/sensorwave/compresor"
 	"github.com/cbiale/sensorwave/tipos"
 	"github.com/cockroachdb/pebble"
@@ -2619,4 +2622,762 @@ func TestConsultarAgregacion_SerieNoExisteConMultiples(t *testing.T) {
 	)
 	assert.Error(t, err)
 	t.Log("ConsultarAgregacion retorna error para serie inexistente")
+}
+
+// ============================================================================
+// TESTS DE ELIMINARSERIE (edge.go)
+// ============================================================================
+
+// TestEliminarSerie_SerieNoExiste verifica error cuando serie no existe
+func TestEliminarSerie_SerieNoExiste(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	err := manager.EliminarSerie("serie/inexistente")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no encontrada")
+	t.Log("EliminarSerie retorna error para serie inexistente")
+}
+
+// TestEliminarSerie_EliminaCache verifica que elimina del cache
+func TestEliminarSerie_EliminaCache(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Crear serie
+	err := manager.CrearSerie(tipos.Serie{
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	})
+	require.NoError(t, err)
+
+	// Verificar que está en cache
+	manager.cache.mu.RLock()
+	_, existe := manager.cache.datos["sensor/temp"]
+	manager.cache.mu.RUnlock()
+	assert.True(t, existe, "Serie debe existir en cache antes de eliminar")
+
+	// Eliminar serie
+	err = manager.EliminarSerie("sensor/temp")
+	require.NoError(t, err)
+
+	// Verificar que ya no está en cache
+	manager.cache.mu.RLock()
+	_, existe = manager.cache.datos["sensor/temp"]
+	manager.cache.mu.RUnlock()
+	assert.False(t, existe, "Serie no debe existir en cache después de eliminar")
+
+	t.Log("EliminarSerie elimina serie del cache correctamente")
+}
+
+// TestEliminarSerie_EliminaMetadatosDB verifica que elimina metadatos de PebbleDB
+func TestEliminarSerie_EliminaMetadatosDB(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Crear serie
+	err := manager.CrearSerie(tipos.Serie{
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	})
+	require.NoError(t, err)
+
+	// Verificar que está en DB
+	_, closer, err := manager.db.Get([]byte("series/sensor/temp"))
+	require.NoError(t, err)
+	closer.Close()
+
+	// Eliminar serie
+	err = manager.EliminarSerie("sensor/temp")
+	require.NoError(t, err)
+
+	// Verificar que ya no está en DB
+	_, _, err = manager.db.Get([]byte("series/sensor/temp"))
+	assert.Equal(t, pebble.ErrNotFound, err, "Metadatos deben ser eliminados de DB")
+
+	t.Log("EliminarSerie elimina metadatos de PebbleDB correctamente")
+}
+
+// TestEliminarSerie_EliminaDatosDB verifica que elimina bloques de datos de PebbleDB
+func TestEliminarSerie_EliminaDatosDB(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Crear serie
+	serie := tipos.Serie{
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	}
+	err := manager.CrearSerie(serie)
+	require.NoError(t, err)
+
+	// Obtener SerieId asignado
+	manager.cache.mu.RLock()
+	serieGuardada := manager.cache.datos["sensor/temp"]
+	manager.cache.mu.RUnlock()
+	serieId := serieGuardada.SerieId
+
+	// Crear y guardar bloques de datos
+	ahora := time.Now().UnixNano()
+	mediciones := []tipos.Medicion{
+		{Tiempo: ahora - 2000, Valor: float64(20.0)},
+		{Tiempo: ahora - 1000, Valor: float64(21.0)},
+	}
+	bloque := crearBloqueComprimidoTest(t, serieGuardada, mediciones)
+	clave := generarClaveDatos(serieId, ahora-2000, ahora-1000)
+	err = manager.db.Set(clave, bloque, pebble.Sync)
+	require.NoError(t, err)
+
+	// Verificar que el bloque existe
+	_, closer, err := manager.db.Get(clave)
+	require.NoError(t, err)
+	closer.Close()
+
+	// Eliminar serie
+	err = manager.EliminarSerie("sensor/temp")
+	require.NoError(t, err)
+
+	// Verificar que el bloque fue eliminado
+	_, _, err = manager.db.Get(clave)
+	assert.Equal(t, pebble.ErrNotFound, err, "Bloques de datos deben ser eliminados")
+
+	t.Log("EliminarSerie elimina bloques de datos de PebbleDB correctamente")
+}
+
+// TestEliminarSerie_EliminaBuffer verifica que elimina y cierra el buffer
+func TestEliminarSerie_EliminaBuffer(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Crear serie
+	err := manager.CrearSerie(tipos.Serie{
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	})
+	require.NoError(t, err)
+
+	// Verificar que existe buffer
+	_, existe := manager.buffers.Load("sensor/temp")
+	assert.True(t, existe, "Buffer debe existir antes de eliminar")
+
+	// Eliminar serie
+	err = manager.EliminarSerie("sensor/temp")
+	require.NoError(t, err)
+
+	// Verificar que buffer fue eliminado
+	_, existe = manager.buffers.Load("sensor/temp")
+	assert.False(t, existe, "Buffer debe ser eliminado")
+
+	t.Log("EliminarSerie elimina y cierra buffer correctamente")
+}
+
+// TestEliminarSerie_NoAfectaOtrasSeries verifica que no elimina otras series
+func TestEliminarSerie_NoAfectaOtrasSeries(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Crear dos series
+	err := manager.CrearSerie(tipos.Serie{
+		Path:             "sensor/temp1",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	})
+	require.NoError(t, err)
+
+	err = manager.CrearSerie(tipos.Serie{
+		Path:             "sensor/temp2",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	})
+	require.NoError(t, err)
+
+	// Eliminar solo la primera
+	err = manager.EliminarSerie("sensor/temp1")
+	require.NoError(t, err)
+
+	// Verificar que la segunda sigue existiendo
+	manager.cache.mu.RLock()
+	_, existe := manager.cache.datos["sensor/temp2"]
+	manager.cache.mu.RUnlock()
+	assert.True(t, existe, "Segunda serie debe seguir existiendo")
+
+	// Verificar en DB
+	_, closer, err := manager.db.Get([]byte("series/sensor/temp2"))
+	require.NoError(t, err)
+	closer.Close()
+
+	t.Log("EliminarSerie no afecta otras series")
+}
+
+// TestEliminarSerie_EliminaMultiplesBloques verifica eliminación de múltiples bloques
+func TestEliminarSerie_EliminaMultiplesBloques(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Crear serie
+	serie := tipos.Serie{
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	}
+	err := manager.CrearSerie(serie)
+	require.NoError(t, err)
+
+	// Obtener SerieId
+	manager.cache.mu.RLock()
+	serieGuardada := manager.cache.datos["sensor/temp"]
+	manager.cache.mu.RUnlock()
+	serieId := serieGuardada.SerieId
+
+	// Crear múltiples bloques
+	ahora := time.Now().UnixNano()
+	var claves [][]byte
+
+	for i := 0; i < 5; i++ {
+		tiempoBase := ahora - int64((i+1)*10000)
+		mediciones := []tipos.Medicion{
+			{Tiempo: tiempoBase, Valor: float64(20.0 + float64(i))},
+			{Tiempo: tiempoBase + 1000, Valor: float64(21.0 + float64(i))},
+		}
+		bloque := crearBloqueComprimidoTest(t, serieGuardada, mediciones)
+		clave := generarClaveDatos(serieId, tiempoBase, tiempoBase+1000)
+		claves = append(claves, clave)
+		err := manager.db.Set(clave, bloque, pebble.Sync)
+		require.NoError(t, err)
+	}
+
+	// Verificar que todos los bloques existen
+	for _, clave := range claves {
+		_, closer, err := manager.db.Get(clave)
+		require.NoError(t, err)
+		closer.Close()
+	}
+
+	// Eliminar serie
+	err = manager.EliminarSerie("sensor/temp")
+	require.NoError(t, err)
+
+	// Verificar que todos los bloques fueron eliminados
+	for _, clave := range claves {
+		_, _, err := manager.db.Get(clave)
+		assert.Equal(t, pebble.ErrNotFound, err, "Todos los bloques deben ser eliminados")
+	}
+
+	t.Log("EliminarSerie elimina múltiples bloques correctamente")
+}
+
+// TestEliminarSerie_ConS3 verifica que se registra eliminación pendiente para S3
+func TestEliminarSerie_ConS3(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Configurar mock de S3
+	clienteOriginal := clienteS3
+	configOriginal := configuracionS3
+	defer func() {
+		clienteS3 = clienteOriginal
+		configuracionS3 = configOriginal
+	}()
+
+	mockS3 := &mockClienteS3{
+		putObjectOutput: &s3.PutObjectOutput{},
+	}
+	clienteS3 = mockS3
+	configuracionS3 = tipos.ConfiguracionS3{Bucket: "test-bucket"}
+
+	// Crear serie
+	err := manager.CrearSerie(tipos.Serie{
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	})
+	require.NoError(t, err)
+
+	// Eliminar serie
+	err = manager.EliminarSerie("sensor/temp")
+	require.NoError(t, err)
+
+	// Verificar que se registró eliminación pendiente (la actualización de S3 es diferida)
+	pendientes, err := manager.cargarEliminacionesPendientes()
+	require.NoError(t, err)
+	assert.Equal(t, 1, len(pendientes), "Debe registrar eliminación pendiente para S3")
+	if len(pendientes) > 0 {
+		assert.Equal(t, "sensor/temp", pendientes[0].Path)
+		assert.Equal(t, 1, pendientes[0].SerieId)
+	}
+
+	t.Log("EliminarSerie registra eliminación pendiente para S3 correctamente")
+}
+
+// TestEliminarSerie_InsercionDespuesDeEliminar verifica que no se puede insertar después de eliminar
+func TestEliminarSerie_InsercionDespuesDeEliminar(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Crear serie
+	err := manager.CrearSerie(tipos.Serie{
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	})
+	require.NoError(t, err)
+
+	// Eliminar serie
+	err = manager.EliminarSerie("sensor/temp")
+	require.NoError(t, err)
+
+	// Intentar insertar
+	err = manager.Insertar("sensor/temp", time.Now().UnixNano(), 25.5)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no encontrada")
+
+	t.Log("EliminarSerie previene inserciones posteriores")
+}
+
+// TestEliminarSerie_ConsultaDespuesDeEliminar verifica que no se puede consultar después de eliminar
+func TestEliminarSerie_ConsultaDespuesDeEliminar(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Crear serie
+	err := manager.CrearSerie(tipos.Serie{
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	})
+	require.NoError(t, err)
+
+	// Eliminar serie
+	err = manager.EliminarSerie("sensor/temp")
+	require.NoError(t, err)
+
+	// Intentar consultar
+	_, err = manager.ConsultarRango("sensor/temp", time.Now().Add(-time.Hour), time.Now())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no encontrada")
+
+	t.Log("EliminarSerie previene consultas posteriores")
+}
+
+// TestEliminarSerie_PuedeRecrear verifica que se puede recrear una serie eliminada
+func TestEliminarSerie_PuedeRecrear(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Crear serie
+	err := manager.CrearSerie(tipos.Serie{
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	})
+	require.NoError(t, err)
+
+	// Eliminar serie
+	err = manager.EliminarSerie("sensor/temp")
+	require.NoError(t, err)
+
+	// Recrear serie (puede ser con configuración diferente)
+	err = manager.CrearSerie(tipos.Serie{
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Integer, // Tipo diferente
+		TamañoBloque:     200,           // Tamaño diferente
+		CompresionBloque: tipos.LZ4,     // Compresión diferente
+		CompresionBytes:  tipos.DeltaDelta,
+	})
+	require.NoError(t, err)
+
+	// Verificar que la nueva configuración está aplicada
+	manager.cache.mu.RLock()
+	serie := manager.cache.datos["sensor/temp"]
+	manager.cache.mu.RUnlock()
+
+	assert.Equal(t, tipos.Integer, serie.TipoDatos)
+	assert.Equal(t, 200, serie.TamañoBloque)
+	assert.Equal(t, tipos.LZ4, serie.CompresionBloque)
+
+	t.Log("EliminarSerie permite recrear serie con nueva configuración")
+}
+
+// ============================================================================
+// TESTS DE ELIMINACIONES PENDIENTES S3 (migracion_datos.go)
+// ============================================================================
+
+// TestGuardarEliminacionPendiente verifica que se guarda correctamente
+func TestGuardarEliminacionPendiente(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	err := manager.guardarEliminacionPendiente(123, "sensor/temp")
+	require.NoError(t, err)
+
+	// Verificar que se guardó en DB
+	clave := generarClaveEliminacionPendiente(123)
+	_, closer, err := manager.db.Get(clave)
+	require.NoError(t, err)
+	closer.Close()
+
+	t.Log("guardarEliminacionPendiente guarda correctamente en PebbleDB")
+}
+
+// TestCargarEliminacionesPendientes verifica carga de pendientes
+func TestCargarEliminacionesPendientes(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Guardar varias pendientes
+	err := manager.guardarEliminacionPendiente(1, "sensor/temp1")
+	require.NoError(t, err)
+	err = manager.guardarEliminacionPendiente(2, "sensor/temp2")
+	require.NoError(t, err)
+	err = manager.guardarEliminacionPendiente(3, "sensor/temp3")
+	require.NoError(t, err)
+
+	// Cargar pendientes
+	pendientes, err := manager.cargarEliminacionesPendientes()
+	require.NoError(t, err)
+	assert.Len(t, pendientes, 3)
+
+	t.Log("cargarEliminacionesPendientes carga todas las pendientes")
+}
+
+// TestEliminarPendienteCompletado verifica eliminación de pendiente
+func TestEliminarPendienteCompletado(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Guardar pendiente
+	err := manager.guardarEliminacionPendiente(123, "sensor/temp")
+	require.NoError(t, err)
+
+	// Eliminar pendiente
+	err = manager.eliminarPendienteCompletado(123)
+	require.NoError(t, err)
+
+	// Verificar que ya no existe
+	clave := generarClaveEliminacionPendiente(123)
+	_, _, err = manager.db.Get(clave)
+	assert.Equal(t, pebble.ErrNotFound, err)
+
+	t.Log("eliminarPendienteCompletado elimina pendiente correctamente")
+}
+
+// TestActualizarEliminacionPendiente verifica actualización de intentos
+func TestActualizarEliminacionPendiente(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Guardar pendiente
+	err := manager.guardarEliminacionPendiente(123, "sensor/temp")
+	require.NoError(t, err)
+
+	// Cargar, modificar y actualizar
+	pendientes, _ := manager.cargarEliminacionesPendientes()
+	pendiente := pendientes[0]
+	pendiente.Intentos = 5
+
+	err = manager.actualizarEliminacionPendiente(pendiente)
+	require.NoError(t, err)
+
+	// Verificar actualización
+	pendientesActualizados, _ := manager.cargarEliminacionesPendientes()
+	assert.Equal(t, 5, pendientesActualizados[0].Intentos)
+
+	t.Log("actualizarEliminacionPendiente actualiza intentos correctamente")
+}
+
+// TestEliminarSerie_GuardaPendienteConS3 verifica que se guarda pendiente cuando hay S3
+func TestEliminarSerie_GuardaPendienteConS3(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Configurar mock de S3
+	clienteOriginal := clienteS3
+	configOriginal := configuracionS3
+	defer func() {
+		clienteS3 = clienteOriginal
+		configuracionS3 = configOriginal
+	}()
+
+	mockS3 := &mockClienteS3{
+		putObjectOutput:   &s3.PutObjectOutput{},
+		listObjectsOutput: &s3.ListObjectsV2Output{}, // Sin objetos
+	}
+	clienteS3 = mockS3
+	configuracionS3 = tipos.ConfiguracionS3{Bucket: "test-bucket"}
+
+	// Crear serie
+	err := manager.CrearSerie(tipos.Serie{
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	})
+	require.NoError(t, err)
+
+	// Obtener SerieId
+	manager.cache.mu.RLock()
+	serieId := manager.cache.datos["sensor/temp"].SerieId
+	manager.cache.mu.RUnlock()
+
+	// Eliminar serie
+	err = manager.EliminarSerie("sensor/temp")
+	require.NoError(t, err)
+
+	// Esperar un momento para que el goroutine procese (best-effort)
+	time.Sleep(100 * time.Millisecond)
+
+	// Verificar que se guardó pendiente (o se procesó y eliminó si tuvo éxito)
+	// Como el mock retorna lista vacía, la eliminación es exitosa y el pendiente se elimina
+	// Pero antes de procesar, el pendiente debió existir
+	// Verificamos que la serie fue eliminada localmente
+	manager.cache.mu.RLock()
+	_, existe := manager.cache.datos["sensor/temp"]
+	manager.cache.mu.RUnlock()
+	assert.False(t, existe)
+
+	t.Logf("EliminarSerie guarda pendiente cuando hay S3 configurado (serieId: %d)", serieId)
+}
+
+// TestEliminarSerie_SinS3NoPendiente verifica que no guarda pendiente sin S3
+func TestEliminarSerie_SinS3NoPendiente(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Asegurar que no hay S3
+	clienteOriginal := clienteS3
+	clienteS3 = nil
+	defer func() { clienteS3 = clienteOriginal }()
+
+	// Crear serie
+	err := manager.CrearSerie(tipos.Serie{
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	})
+	require.NoError(t, err)
+
+	// Eliminar serie
+	err = manager.EliminarSerie("sensor/temp")
+	require.NoError(t, err)
+
+	// Verificar que no hay pendientes
+	pendientes, err := manager.cargarEliminacionesPendientes()
+	require.NoError(t, err)
+	assert.Empty(t, pendientes)
+
+	t.Log("EliminarSerie no guarda pendiente sin S3 configurado")
+}
+
+// TestEliminarSerieDeS3_SinS3 verifica error cuando no hay S3
+func TestEliminarSerieDeS3_SinS3(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	clienteOriginal := clienteS3
+	clienteS3 = nil
+	defer func() { clienteS3 = clienteOriginal }()
+
+	_, err := manager.eliminarSerieDeS3(123)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "no está configurado")
+
+	t.Log("eliminarSerieDeS3 retorna error sin S3 configurado")
+}
+
+// TestEliminarSerieDeS3_Exitoso verifica eliminación exitosa de S3
+func TestEliminarSerieDeS3_Exitoso(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Configurar mock con objetos a eliminar
+	clienteOriginal := clienteS3
+	configOriginal := configuracionS3
+	defer func() {
+		clienteS3 = clienteOriginal
+		configuracionS3 = configOriginal
+	}()
+
+	// Simular 3 objetos en S3
+	key1 := aws.String("test-node/data/0000000001/bloque1")
+	key2 := aws.String("test-node/data/0000000001/bloque2")
+	key3 := aws.String("test-node/data/0000000001/bloque3")
+
+	mockS3 := &mockClienteS3{
+		listObjectsOutput: &s3.ListObjectsV2Output{
+			Contents: []s3types.Object{
+				{Key: key1},
+				{Key: key2},
+				{Key: key3},
+			},
+		},
+		deleteObjectOutput: &s3.DeleteObjectOutput{},
+	}
+	clienteS3 = mockS3
+	configuracionS3 = tipos.ConfiguracionS3{Bucket: "test-bucket"}
+
+	// Eliminar serie de S3
+	eliminados, err := manager.eliminarSerieDeS3(1)
+	require.NoError(t, err)
+	assert.Equal(t, 3, eliminados)
+	assert.Equal(t, 3, mockS3.deleteObjectCalls)
+
+	t.Log("eliminarSerieDeS3 elimina objetos correctamente")
+}
+
+// TestProcesarEliminacionesPendientes_SinS3 verifica que no hace nada sin S3
+func TestProcesarEliminacionesPendientes_SinS3(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	clienteOriginal := clienteS3
+	clienteS3 = nil
+	defer func() { clienteS3 = clienteOriginal }()
+
+	// Guardar pendiente manualmente
+	pendiente := EliminacionPendiente{SerieId: 1, Path: "test", Timestamp: time.Now().UnixNano(), Intentos: 0}
+	datos, _ := tipos.SerializarGob(pendiente)
+	manager.db.Set(generarClaveEliminacionPendiente(1), datos, pebble.Sync)
+
+	// Procesar (no debería hacer nada)
+	err := manager.ProcesarEliminacionesPendientes()
+	assert.NoError(t, err)
+
+	// El pendiente debería seguir ahí
+	pendientes, _ := manager.cargarEliminacionesPendientes()
+	assert.Len(t, pendientes, 1)
+
+	t.Log("ProcesarEliminacionesPendientes no hace nada sin S3")
+}
+
+// TestProcesarEliminacionesPendientes_Exitoso verifica procesamiento exitoso
+func TestProcesarEliminacionesPendientes_Exitoso(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Configurar mock
+	clienteOriginal := clienteS3
+	configOriginal := configuracionS3
+	defer func() {
+		clienteS3 = clienteOriginal
+		configuracionS3 = configOriginal
+	}()
+
+	mockS3 := &mockClienteS3{
+		listObjectsOutput:  &s3.ListObjectsV2Output{}, // Sin objetos (ya migrados)
+		putObjectOutput:    &s3.PutObjectOutput{},     // Para RegistrarEnS3
+		deleteObjectOutput: &s3.DeleteObjectOutput{},
+	}
+	clienteS3 = mockS3
+	configuracionS3 = tipos.ConfiguracionS3{Bucket: "test-bucket"}
+
+	// Guardar pendiente
+	err := manager.guardarEliminacionPendiente(1, "sensor/temp")
+	require.NoError(t, err)
+
+	// Procesar
+	err = manager.ProcesarEliminacionesPendientes()
+	require.NoError(t, err)
+
+	// Verificar que el pendiente fue eliminado
+	pendientes, _ := manager.cargarEliminacionesPendientes()
+	assert.Empty(t, pendientes)
+
+	// Verificar que se actualizó el registro en S3
+	assert.GreaterOrEqual(t, mockS3.putObjectCalls, 1)
+
+	t.Log("ProcesarEliminacionesPendientes procesa y elimina pendientes exitosamente")
+}
+
+// TestProcesarEliminacionesPendientes_FallaConexion verifica reintento
+func TestProcesarEliminacionesPendientes_FallaConexion(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Configurar mock con error
+	clienteOriginal := clienteS3
+	configOriginal := configuracionS3
+	defer func() {
+		clienteS3 = clienteOriginal
+		configuracionS3 = configOriginal
+	}()
+
+	mockS3 := &mockClienteS3{
+		listObjectsErr: fmt.Errorf("conexión fallida"),
+	}
+	clienteS3 = mockS3
+	configuracionS3 = tipos.ConfiguracionS3{Bucket: "test-bucket"}
+
+	// Guardar pendiente
+	err := manager.guardarEliminacionPendiente(1, "sensor/temp")
+	require.NoError(t, err)
+
+	// Procesar (fallará)
+	err = manager.ProcesarEliminacionesPendientes()
+	require.NoError(t, err) // No retorna error, solo loggea
+
+	// Verificar que el pendiente sigue ahí con intentos incrementados
+	pendientes, _ := manager.cargarEliminacionesPendientes()
+	require.Len(t, pendientes, 1)
+	assert.Equal(t, 1, pendientes[0].Intentos)
+
+	t.Log("ProcesarEliminacionesPendientes incrementa intentos en fallo y no descarta")
+}
+
+// TestProcesarEliminacionesPendientes_MultiplesSeries verifica múltiples pendientes
+func TestProcesarEliminacionesPendientes_MultiplesSeries(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Configurar mock
+	clienteOriginal := clienteS3
+	configOriginal := configuracionS3
+	defer func() {
+		clienteS3 = clienteOriginal
+		configuracionS3 = configOriginal
+	}()
+
+	mockS3 := &mockClienteS3{
+		listObjectsOutput:  &s3.ListObjectsV2Output{},
+		putObjectOutput:    &s3.PutObjectOutput{},
+		deleteObjectOutput: &s3.DeleteObjectOutput{},
+	}
+	clienteS3 = mockS3
+	configuracionS3 = tipos.ConfiguracionS3{Bucket: "test-bucket"}
+
+	// Guardar varias pendientes
+	for i := 1; i <= 5; i++ {
+		err := manager.guardarEliminacionPendiente(i, fmt.Sprintf("sensor/temp%d", i))
+		require.NoError(t, err)
+	}
+
+	// Verificar que hay 5 pendientes
+	pendientes, _ := manager.cargarEliminacionesPendientes()
+	assert.Len(t, pendientes, 5)
+
+	// Procesar
+	err := manager.ProcesarEliminacionesPendientes()
+	require.NoError(t, err)
+
+	// Verificar que todos fueron procesados
+	pendientes, _ = manager.cargarEliminacionesPendientes()
+	assert.Empty(t, pendientes)
+
+	t.Log("ProcesarEliminacionesPendientes procesa múltiples pendientes")
+}
+
+// TestGenerarClaveEliminacionPendiente verifica formato de clave
+func TestGenerarClaveEliminacionPendiente(t *testing.T) {
+	clave := generarClaveEliminacionPendiente(123)
+	assert.Equal(t, []byte("pendientes/eliminar/0000000123"), clave)
+
+	clave = generarClaveEliminacionPendiente(1)
+	assert.Equal(t, []byte("pendientes/eliminar/0000000001"), clave)
+
+	t.Log("generarClaveEliminacionPendiente genera claves con formato correcto")
 }

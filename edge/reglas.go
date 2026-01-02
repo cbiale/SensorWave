@@ -28,15 +28,11 @@ const (
 type TipoAgregacion = tipos.TipoAgregacion
 
 const (
-	AgregacionPromedio  = tipos.AgregacionPromedio
-	AgregacionMaximo    = tipos.AgregacionMaximo
-	AgregacionMinimo    = tipos.AgregacionMinimo
-	AgregacionSuma      = tipos.AgregacionSuma
-	AgregacionCount     = tipos.AgregacionCount
-	AgregacionFirst     = tipos.AgregacionFirst
-	AgregacionLast      = tipos.AgregacionLast
-	AgregacionFirstTime = tipos.AgregacionFirstTime
-	AgregacionLastTime  = tipos.AgregacionLastTime
+	AgregacionPromedio = tipos.AgregacionPromedio
+	AgregacionMaximo   = tipos.AgregacionMaximo
+	AgregacionMinimo   = tipos.AgregacionMinimo
+	AgregacionSuma     = tipos.AgregacionSuma
+	AgregacionCount    = tipos.AgregacionCount
 )
 
 type TipoLogica string
@@ -59,8 +55,8 @@ type Condicion struct {
 	VentanaT time.Duration
 
 	// Agregacion especifica el tipo de agregación a aplicar sobre los datos.
-	// Si está vacía (""), se usa el último valor (equivalente a "last").
-	// Valores soportados: promedio, maximo, minimo, suma, count, first, last, first_time, last_time
+	// Si está vacía ("") o es "last", se usa el último valor (ConsultarUltimoPunto).
+	// Valores soportados: promedio, maximo, minimo, suma, count
 	Agregacion TipoAgregacion
 
 	// Operador de comparación para evaluar la condición.
@@ -223,8 +219,7 @@ func (mr *MotorReglas) evaluarCondicionesRegla(regla *Regla, timestamp time.Time
 
 // CalcularAgregacionSimple calcula una agregación sobre un slice de valores.
 // Función pública para ser usada por consultas y reglas.
-// NOTA: Para agregaciones First/Last, se asume que los valores están ordenados por tiempo ascendente.
-// Para FirstTime/LastTime, usar CalcularAgregacionConTiempos.
+// Solo soporta agregaciones numéricas: promedio, maximo, minimo, suma, count.
 func CalcularAgregacionSimple(valores []float64, agregacion TipoAgregacion) (float64, error) {
 	if len(valores) == 0 {
 		return 0, fmt.Errorf("no hay valores para agregar")
@@ -266,77 +261,8 @@ func CalcularAgregacionSimple(valores []float64, agregacion TipoAgregacion) (flo
 	case AgregacionCount:
 		return float64(len(valores)), nil
 
-	case AgregacionFirst:
-		// Primer valor (asumiendo orden cronológico ascendente)
-		return valores[0], nil
-
-	case AgregacionLast:
-		// Último valor (asumiendo orden cronológico ascendente)
-		return valores[len(valores)-1], nil
-
-	case AgregacionFirstTime, AgregacionLastTime:
-		return 0, fmt.Errorf("agregación %s requiere timestamps, usar CalcularAgregacionConTiempos", agregacion)
-
 	default:
 		return 0, fmt.Errorf("tipo de agregación no soportado: %s", agregacion)
-	}
-}
-
-// CalcularAgregacionConTiempos calcula una agregación sobre valores con sus timestamps asociados.
-// Necesario para agregaciones FirstTime/LastTime que retornan timestamps.
-// Los valores y tiempos deben tener la misma longitud y estar en el mismo orden.
-func CalcularAgregacionConTiempos(valores []float64, tiempos []int64, agregacion TipoAgregacion) (float64, error) {
-	if len(valores) == 0 {
-		return 0, fmt.Errorf("no hay valores para agregar")
-	}
-	if len(valores) != len(tiempos) {
-		return 0, fmt.Errorf("valores y tiempos deben tener la misma longitud")
-	}
-
-	switch agregacion {
-	case AgregacionFirstTime:
-		// Encontrar el timestamp más antiguo (mínimo)
-		minIdx := 0
-		for i := 1; i < len(tiempos); i++ {
-			if tiempos[i] < tiempos[minIdx] {
-				minIdx = i
-			}
-		}
-		return float64(tiempos[minIdx]), nil
-
-	case AgregacionLastTime:
-		// Encontrar el timestamp más reciente (máximo)
-		maxIdx := 0
-		for i := 1; i < len(tiempos); i++ {
-			if tiempos[i] > tiempos[maxIdx] {
-				maxIdx = i
-			}
-		}
-		return float64(tiempos[maxIdx]), nil
-
-	case AgregacionFirst:
-		// Primer valor por timestamp (el más antiguo)
-		minIdx := 0
-		for i := 1; i < len(tiempos); i++ {
-			if tiempos[i] < tiempos[minIdx] {
-				minIdx = i
-			}
-		}
-		return valores[minIdx], nil
-
-	case AgregacionLast:
-		// Último valor por timestamp (el más reciente)
-		maxIdx := 0
-		for i := 1; i < len(tiempos); i++ {
-			if tiempos[i] > tiempos[maxIdx] {
-				maxIdx = i
-			}
-		}
-		return valores[maxIdx], nil
-
-	default:
-		// Para otras agregaciones, delegar a CalcularAgregacionSimple
-		return CalcularAgregacionSimple(valores, agregacion)
 	}
 }
 
@@ -344,7 +270,8 @@ func (mr *MotorReglas) evaluarCondicion(condicion *Condicion, timestamp time.Tim
 	tiempoInicio := timestamp.Add(-condicion.VentanaT)
 
 	// Determinar si es agregación que requiere último valor o agregación completa
-	agregacionVacia := condicion.Agregacion == "" || condicion.Agregacion == AgregacionLast
+	// Mantenemos compatibilidad con "last" como string para indicar último valor
+	agregacionVacia := condicion.Agregacion == "" || condicion.Agregacion == "last"
 
 	if agregacionVacia {
 		// Sin agregación (o "last") = obtener último valor en ventana
@@ -654,12 +581,11 @@ func (mr *MotorReglas) validarCondicion(condicion *Condicion) error {
 	}
 
 	// VALIDACIÓN 7: Agregación válida (si se especifica)
-	if condicion.Agregacion != "" {
+	// Nota: "last" es aceptado pero se maneja como caso especial (usa ConsultarUltimoPunto)
+	if condicion.Agregacion != "" && condicion.Agregacion != "last" {
 		agregacionesValidas := []TipoAgregacion{
 			AgregacionPromedio, AgregacionMaximo, AgregacionMinimo,
 			AgregacionSuma, AgregacionCount,
-			AgregacionFirst, AgregacionLast,
-			AgregacionFirstTime, AgregacionLastTime,
 		}
 		agregacionValida := false
 		for _, agg := range agregacionesValidas {
@@ -669,12 +595,13 @@ func (mr *MotorReglas) validarCondicion(condicion *Condicion) error {
 			}
 		}
 		if !agregacionValida {
-			return fmt.Errorf("agregación inválida: %s", condicion.Agregacion)
+			return fmt.Errorf("agregación inválida: %s (use: promedio, maximo, minimo, suma, count)", condicion.Agregacion)
 		}
 	}
 
 	// VALIDACIÓN 8: Verificar compatibilidad de tipos con agregación
-	if condicion.Agregacion != "" && condicion.Agregacion != AgregacionCount {
+	// Solo validar para agregaciones numéricas (no para "" ni "last" ni "count")
+	if condicion.Agregacion != "" && condicion.Agregacion != "last" && condicion.Agregacion != AgregacionCount {
 		if err := mr.validarAgregacionCompatible(condicion); err != nil {
 			return err
 		}

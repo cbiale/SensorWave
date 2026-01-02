@@ -299,3 +299,237 @@ func (me *ManagerEdge) IniciarMigracionAutomatica(intervalo time.Duration) {
 
 	log.Printf("Migración automática iniciada (intervalo: %v)", intervalo)
 }
+
+// ============================================================================
+// ELIMINACIÓN DE SERIES EN S3 (OFFLINE-FIRST)
+// ============================================================================
+
+// EliminacionPendiente representa una serie pendiente de eliminar de S3
+type EliminacionPendiente struct {
+	SerieId   int    // ID de la serie eliminada
+	Path      string // Path original (para logging)
+	Timestamp int64  // Cuándo se solicitó la eliminación (UnixNano)
+	Intentos  int    // Cantidad de intentos fallidos
+}
+
+// generarClaveEliminacionPendiente genera la clave para almacenar una eliminación pendiente
+func generarClaveEliminacionPendiente(serieId int) []byte {
+	return []byte(fmt.Sprintf("pendientes/eliminar/%010d", serieId))
+}
+
+// guardarEliminacionPendiente guarda una eliminación pendiente en PebbleDB
+func (me *ManagerEdge) guardarEliminacionPendiente(serieId int, path string) error {
+	pendiente := EliminacionPendiente{
+		SerieId:   serieId,
+		Path:      path,
+		Timestamp: time.Now().UnixNano(),
+		Intentos:  0,
+	}
+
+	datos, err := tipos.SerializarGob(pendiente)
+	if err != nil {
+		return fmt.Errorf("error serializando eliminación pendiente: %v", err)
+	}
+
+	clave := generarClaveEliminacionPendiente(serieId)
+	err = me.db.Set(clave, datos, pebble.Sync)
+	if err != nil {
+		return fmt.Errorf("error guardando eliminación pendiente: %v", err)
+	}
+
+	log.Printf("Eliminación pendiente registrada para serie %s (ID: %d)", path, serieId)
+	return nil
+}
+
+// cargarEliminacionesPendientes carga todas las eliminaciones pendientes de PebbleDB
+func (me *ManagerEdge) cargarEliminacionesPendientes() ([]EliminacionPendiente, error) {
+	var pendientes []EliminacionPendiente
+
+	iter, err := me.db.NewIter(&pebble.IterOptions{
+		LowerBound: []byte("pendientes/eliminar/"),
+		UpperBound: []byte("pendientes/eliminar0"), // Rango que incluye todas las claves
+	})
+	if err != nil {
+		return nil, fmt.Errorf("error creando iterador para pendientes: %v", err)
+	}
+	defer iter.Close()
+
+	for iter.First(); iter.Valid(); iter.Next() {
+		var pendiente EliminacionPendiente
+		if err := tipos.DeserializarGob(iter.Value(), &pendiente); err != nil {
+			log.Printf("Advertencia: error deserializando pendiente %s: %v", string(iter.Key()), err)
+			continue
+		}
+		pendientes = append(pendientes, pendiente)
+	}
+
+	if err := iter.Error(); err != nil {
+		return nil, fmt.Errorf("error iterando pendientes: %v", err)
+	}
+
+	return pendientes, nil
+}
+
+// actualizarEliminacionPendiente actualiza el contador de intentos de una eliminación pendiente
+func (me *ManagerEdge) actualizarEliminacionPendiente(pendiente EliminacionPendiente) error {
+	datos, err := tipos.SerializarGob(pendiente)
+	if err != nil {
+		return fmt.Errorf("error serializando eliminación pendiente: %v", err)
+	}
+
+	clave := generarClaveEliminacionPendiente(pendiente.SerieId)
+	return me.db.Set(clave, datos, pebble.Sync)
+}
+
+// eliminarPendienteCompletado elimina una eliminación pendiente de PebbleDB (cuando se completó)
+func (me *ManagerEdge) eliminarPendienteCompletado(serieId int) error {
+	clave := generarClaveEliminacionPendiente(serieId)
+	return me.db.Delete(clave, pebble.Sync)
+}
+
+// eliminarSerieDeS3 elimina todos los objetos de una serie en S3
+// Retorna el número de objetos eliminados y un error si falla
+func (me *ManagerEdge) eliminarSerieDeS3(serieId int) (int, error) {
+	if clienteS3 == nil {
+		return 0, fmt.Errorf("S3 no está configurado")
+	}
+
+	ctx := context.TODO()
+	prefijo := fmt.Sprintf("%s/data/%010d/", me.nodoID, serieId)
+	objetosEliminados := 0
+
+	// Listar objetos con el prefijo de la serie
+	listInput := &s3.ListObjectsV2Input{
+		Bucket: aws.String(configuracionS3.Bucket),
+		Prefix: aws.String(prefijo),
+	}
+
+	resultado, err := clienteS3.ListObjectsV2(ctx, listInput)
+	if err != nil {
+		return 0, fmt.Errorf("error listando objetos en S3: %v", err)
+	}
+
+	// Eliminar cada objeto encontrado
+	for _, objeto := range resultado.Contents {
+		_, err := clienteS3.DeleteObject(ctx, &s3.DeleteObjectInput{
+			Bucket: aws.String(configuracionS3.Bucket),
+			Key:    objeto.Key,
+		})
+		if err != nil {
+			return objetosEliminados, fmt.Errorf("error eliminando objeto %s: %v", *objeto.Key, err)
+		}
+		objetosEliminados++
+	}
+
+	// Si hay más objetos (paginación), continuar
+	for resultado.IsTruncated != nil && *resultado.IsTruncated {
+		listInput.ContinuationToken = resultado.NextContinuationToken
+		resultado, err = clienteS3.ListObjectsV2(ctx, listInput)
+		if err != nil {
+			return objetosEliminados, fmt.Errorf("error listando más objetos en S3: %v", err)
+		}
+
+		for _, objeto := range resultado.Contents {
+			_, err := clienteS3.DeleteObject(ctx, &s3.DeleteObjectInput{
+				Bucket: aws.String(configuracionS3.Bucket),
+				Key:    objeto.Key,
+			})
+			if err != nil {
+				return objetosEliminados, fmt.Errorf("error eliminando objeto %s: %v", *objeto.Key, err)
+			}
+			objetosEliminados++
+		}
+	}
+
+	return objetosEliminados, nil
+}
+
+// ProcesarEliminacionesPendientes procesa todas las eliminaciones pendientes de S3
+// Intenta eliminar los datos de cada serie en S3 y actualiza el registro del nodo
+func (me *ManagerEdge) ProcesarEliminacionesPendientes() error {
+	// Verificar si el manager está cerrando
+	select {
+	case <-me.done:
+		return nil // Manager cerrando, no procesar
+	default:
+	}
+
+	if clienteS3 == nil {
+		return nil // Sin S3, nada que procesar
+	}
+
+	pendientes, err := me.cargarEliminacionesPendientes()
+	if err != nil {
+		return fmt.Errorf("error cargando pendientes: %v", err)
+	}
+
+	if len(pendientes) == 0 {
+		return nil // Nada que procesar
+	}
+
+	log.Printf("Procesando %d eliminaciones pendientes de S3", len(pendientes))
+
+	exitosos := 0
+	fallidos := 0
+
+	for _, pendiente := range pendientes {
+		// Intentar eliminar de S3
+		objetosEliminados, err := me.eliminarSerieDeS3(pendiente.SerieId)
+
+		if err != nil {
+			// Falló: incrementar intentos y actualizar
+			pendiente.Intentos++
+			if updateErr := me.actualizarEliminacionPendiente(pendiente); updateErr != nil {
+				log.Printf("Error actualizando pendiente: %v", updateErr)
+			}
+			log.Printf("Intento %d fallido para eliminar serie %s (ID: %d) de S3: %v",
+				pendiente.Intentos, pendiente.Path, pendiente.SerieId, err)
+			fallidos++
+		} else {
+			// Éxito: eliminar de la cola de pendientes
+			if err := me.eliminarPendienteCompletado(pendiente.SerieId); err != nil {
+				log.Printf("Error eliminando pendiente completado: %v", err)
+			}
+			log.Printf("Serie %s (ID: %d) eliminada de S3: %d objetos eliminados",
+				pendiente.Path, pendiente.SerieId, objetosEliminados)
+			exitosos++
+		}
+	}
+
+	// Actualizar registro del nodo en S3 si hubo eliminaciones exitosas
+	if exitosos > 0 {
+		if err := me.RegistrarEnS3(); err != nil {
+			log.Printf("Advertencia: error actualizando registro del nodo en S3: %v", err)
+		}
+	}
+
+	log.Printf("Eliminaciones pendientes procesadas: %d exitosas, %d fallidas", exitosos, fallidos)
+	return nil
+}
+
+// IniciarLimpiezaS3Automatica inicia un goroutine que procesa eliminaciones pendientes
+// cada 5 minutos (mismo intervalo que limpieza de reglas)
+func (me *ManagerEdge) IniciarLimpiezaS3Automatica() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-me.done:
+				log.Printf("Deteniendo limpieza automática de S3")
+				return
+			case <-ticker.C:
+				if clienteS3 == nil {
+					continue // S3 no configurado, saltar
+				}
+
+				if err := me.ProcesarEliminacionesPendientes(); err != nil {
+					log.Printf("Error en limpieza automática de S3: %v", err)
+				}
+			}
+		}
+	}()
+
+	log.Printf("Limpieza automática de S3 iniciada (intervalo: 5 minutos)")
+}

@@ -192,6 +192,81 @@ func TestSerializarDeserializarGob_SolicitudConsultaPunto(t *testing.T) {
 	t.Log("✓ SolicitudConsultaPunto serializada/deserializada correctamente")
 }
 
+// TestSerializarDeserializarGob_SolicitudConsultaPuntoConTiempos verifica serialización con tiempos opcionales
+func TestSerializarDeserializarGob_SolicitudConsultaPuntoConTiempos(t *testing.T) {
+	tiempoInicio := time.Now().Add(-1 * time.Hour).UnixNano()
+	tiempoFin := time.Now().UnixNano()
+
+	original := SolicitudConsultaPunto{
+		Serie:        "sensor/temperatura",
+		TiempoInicio: &tiempoInicio,
+		TiempoFin:    &tiempoFin,
+	}
+
+	data, err := SerializarGob(original)
+	if err != nil {
+		t.Fatalf("Error al serializar SolicitudConsultaPunto con tiempos: %v", err)
+	}
+
+	var deserializada SolicitudConsultaPunto
+	err = DeserializarGob(data, &deserializada)
+	if err != nil {
+		t.Fatalf("Error al deserializar SolicitudConsultaPunto con tiempos: %v", err)
+	}
+
+	if deserializada.Serie != original.Serie {
+		t.Errorf("Serie incorrecta: esperada %s, obtenida %s", original.Serie, deserializada.Serie)
+	}
+
+	if deserializada.TiempoInicio == nil {
+		t.Error("TiempoInicio es nil, se esperaba un valor")
+	} else if *deserializada.TiempoInicio != tiempoInicio {
+		t.Errorf("TiempoInicio incorrecto: esperado %d, obtenido %d", tiempoInicio, *deserializada.TiempoInicio)
+	}
+
+	if deserializada.TiempoFin == nil {
+		t.Error("TiempoFin es nil, se esperaba un valor")
+	} else if *deserializada.TiempoFin != tiempoFin {
+		t.Errorf("TiempoFin incorrecto: esperado %d, obtenido %d", tiempoFin, *deserializada.TiempoFin)
+	}
+
+	t.Log("✓ SolicitudConsultaPunto con tiempos opcionales serializada/deserializada correctamente")
+}
+
+// TestSerializarDeserializarGob_SolicitudConsultaPuntoTiemposNil verifica que tiempos nil se preservan
+func TestSerializarDeserializarGob_SolicitudConsultaPuntoTiemposNil(t *testing.T) {
+	original := SolicitudConsultaPunto{
+		Serie:        "sensor/humedad",
+		TiempoInicio: nil, // Explícitamente nil
+		TiempoFin:    nil, // Explícitamente nil
+	}
+
+	data, err := SerializarGob(original)
+	if err != nil {
+		t.Fatalf("Error al serializar SolicitudConsultaPunto con tiempos nil: %v", err)
+	}
+
+	var deserializada SolicitudConsultaPunto
+	err = DeserializarGob(data, &deserializada)
+	if err != nil {
+		t.Fatalf("Error al deserializar SolicitudConsultaPunto con tiempos nil: %v", err)
+	}
+
+	if deserializada.Serie != original.Serie {
+		t.Errorf("Serie incorrecta")
+	}
+
+	if deserializada.TiempoInicio != nil {
+		t.Errorf("TiempoInicio debería ser nil, obtenido %d", *deserializada.TiempoInicio)
+	}
+
+	if deserializada.TiempoFin != nil {
+		t.Errorf("TiempoFin debería ser nil, obtenido %d", *deserializada.TiempoFin)
+	}
+
+	t.Log("✓ SolicitudConsultaPunto con tiempos nil preserva valores nil correctamente")
+}
+
 // TestSerializarDeserializarGob_ResultadoConsultaPunto verifica serialización de ResultadoConsultaPunto
 func TestSerializarDeserializarGob_ResultadoConsultaPunto(t *testing.T) {
 	ahora := time.Now().UnixNano()
@@ -421,8 +496,9 @@ func TestSerializarGob_ErrorFuncion(t *testing.T) {
 // TestSerializarDeserializarGob_ResultadoAgregacion verifica serialización de ResultadoAgregacion
 func TestSerializarDeserializarGob_ResultadoAgregacion(t *testing.T) {
 	original := ResultadoAgregacion{
-		Series:  []string{"sensor1/temp", "sensor2/temp", "sensor3/temp"},
-		Valores: []float64{25.5, 26.0, 24.8},
+		Series:       []string{"sensor1/temp", "sensor2/temp", "sensor3/temp"},
+		Agregaciones: []TipoAgregacion{AgregacionPromedio},
+		Valores:      [][]float64{{25.5, 26.0, 24.8}}, // [agregacion][serie]
 	}
 
 	data, err := SerializarGob(original)
@@ -441,8 +517,13 @@ func TestSerializarDeserializarGob_ResultadoAgregacion(t *testing.T) {
 			len(original.Series), len(deserializado.Series))
 	}
 
+	if len(deserializado.Agregaciones) != len(original.Agregaciones) {
+		t.Errorf("Cantidad de agregaciones incorrecta: esperadas %d, obtenidas %d",
+			len(original.Agregaciones), len(deserializado.Agregaciones))
+	}
+
 	if len(deserializado.Valores) != len(original.Valores) {
-		t.Errorf("Cantidad de valores incorrecta: esperados %d, obtenidos %d",
+		t.Errorf("Cantidad de filas de valores incorrecta: esperadas %d, obtenidas %d",
 			len(original.Valores), len(deserializado.Valores))
 	}
 
@@ -450,20 +531,28 @@ func TestSerializarDeserializarGob_ResultadoAgregacion(t *testing.T) {
 		if serie != original.Series[i] {
 			t.Errorf("Serie %d incorrecta: esperada %s, obtenida %s", i, original.Series[i], serie)
 		}
-		if deserializado.Valores[i] != original.Valores[i] {
-			t.Errorf("Valor %d incorrecto: esperado %f, obtenido %f", i, original.Valores[i], deserializado.Valores[i])
+	}
+
+	// Verificar valores [agregacion][serie]
+	for i, agregacion := range deserializado.Valores {
+		for j, valor := range agregacion {
+			if valor != original.Valores[i][j] {
+				t.Errorf("Valor [%d][%d] incorrecto: esperado %f, obtenido %f", i, j, original.Valores[i][j], valor)
+			}
 		}
 	}
 
-	t.Logf("✓ ResultadoAgregacion con %d series serializado correctamente", len(deserializado.Series))
+	t.Logf("✓ ResultadoAgregacion con %d series y %d agregaciones serializado correctamente",
+		len(deserializado.Series), len(deserializado.Agregaciones))
 }
 
 // TestSerializarDeserializarGob_RespuestaConsultaAgregacion verifica serialización de respuesta agregación
 func TestSerializarDeserializarGob_RespuestaConsultaAgregacion(t *testing.T) {
 	original := RespuestaConsultaAgregacion{
 		Resultado: ResultadoAgregacion{
-			Series:  []string{"sensor/temp"},
-			Valores: []float64{25.5},
+			Series:       []string{"sensor/temp"},
+			Agregaciones: []TipoAgregacion{AgregacionPromedio},
+			Valores:      [][]float64{{25.5}}, // [agregacion][serie]
 		},
 		Error: "",
 	}
@@ -487,8 +576,8 @@ func TestSerializarDeserializarGob_RespuestaConsultaAgregacion(t *testing.T) {
 		t.Errorf("Serie incorrecta: esperada sensor/temp, obtenida %s", deserializada.Resultado.Series[0])
 	}
 
-	if deserializada.Resultado.Valores[0] != 25.5 {
-		t.Errorf("Valor incorrecto: esperado 25.5, obtenido %f", deserializada.Resultado.Valores[0])
+	if deserializada.Resultado.Valores[0][0] != 25.5 {
+		t.Errorf("Valor incorrecto: esperado 25.5, obtenido %f", deserializada.Resultado.Valores[0][0])
 	}
 
 	t.Log("✓ RespuestaConsultaAgregacion serializada/deserializada correctamente")
@@ -529,12 +618,15 @@ func TestSerializarDeserializarGob_ResultadoAgregacionTemporal(t *testing.T) {
 	intervalo := int64(time.Minute)
 
 	original := ResultadoAgregacionTemporal{
-		Series:  []string{"sensor1/temp", "sensor2/temp"},
-		Tiempos: []int64{ahora, ahora + intervalo, ahora + 2*intervalo},
-		Valores: [][]float64{
-			{25.5, 26.0}, // bucket 0
-			{25.8, 26.3}, // bucket 1
-			{26.0, 26.5}, // bucket 2
+		Series:       []string{"sensor1/temp", "sensor2/temp"},
+		Tiempos:      []int64{ahora, ahora + intervalo, ahora + 2*intervalo},
+		Agregaciones: []TipoAgregacion{AgregacionPromedio},
+		Valores: [][][]float64{
+			{ // agregación 0 (promedio)
+				{25.5, 26.0}, // bucket 0
+				{25.8, 26.3}, // bucket 1
+				{26.0, 26.5}, // bucket 2
+			},
 		},
 	}
 
@@ -571,26 +663,38 @@ func TestSerializarDeserializarGob_ResultadoAgregacionTemporal(t *testing.T) {
 		}
 	}
 
-	// Verificar matriz de valores
+	// Verificar agregaciones
+	if len(deserializado.Agregaciones) != len(original.Agregaciones) {
+		t.Errorf("Cantidad de agregaciones incorrecta: esperadas %d, obtenidas %d",
+			len(original.Agregaciones), len(deserializado.Agregaciones))
+	}
+
+	// Verificar matriz de valores [agregacion][bucket][serie]
 	if len(deserializado.Valores) != len(original.Valores) {
-		t.Errorf("Cantidad de buckets incorrecta: esperados %d, obtenidos %d",
+		t.Errorf("Cantidad de agregaciones en valores incorrecta: esperadas %d, obtenidas %d",
 			len(original.Valores), len(deserializado.Valores))
 	}
-	for i, bucket := range deserializado.Valores {
-		if len(bucket) != len(original.Valores[i]) {
-			t.Errorf("Bucket %d: cantidad de valores incorrecta: esperados %d, obtenidos %d",
-				i, len(original.Valores[i]), len(bucket))
+	for a, agregacion := range deserializado.Valores {
+		if len(agregacion) != len(original.Valores[a]) {
+			t.Errorf("Agregación %d: cantidad de buckets incorrecta: esperados %d, obtenidos %d",
+				a, len(original.Valores[a]), len(agregacion))
 		}
-		for j, valor := range bucket {
-			if valor != original.Valores[i][j] {
-				t.Errorf("Valor [%d][%d] incorrecto: esperado %f, obtenido %f",
-					i, j, original.Valores[i][j], valor)
+		for b, bucket := range agregacion {
+			if len(bucket) != len(original.Valores[a][b]) {
+				t.Errorf("Bucket [%d][%d]: cantidad de series incorrecta: esperadas %d, obtenidas %d",
+					a, b, len(original.Valores[a][b]), len(bucket))
+			}
+			for s, valor := range bucket {
+				if valor != original.Valores[a][b][s] {
+					t.Errorf("Valor [%d][%d][%d] incorrecto: esperado %f, obtenido %f",
+						a, b, s, original.Valores[a][b][s], valor)
+				}
 			}
 		}
 	}
 
-	t.Logf("✓ ResultadoAgregacionTemporal con %d series y %d buckets serializado correctamente",
-		len(deserializado.Series), len(deserializado.Tiempos))
+	t.Logf("✓ ResultadoAgregacionTemporal con %d series, %d buckets y %d agregaciones serializado correctamente",
+		len(deserializado.Series), len(deserializado.Tiempos), len(deserializado.Agregaciones))
 }
 
 // TestSerializarDeserializarGob_ResultadoAgregacionTemporalConNaN verifica serialización con valores NaN
@@ -599,11 +703,14 @@ func TestSerializarDeserializarGob_ResultadoAgregacionTemporalConNaN(t *testing.
 	intervalo := int64(time.Minute)
 
 	original := ResultadoAgregacionTemporal{
-		Series:  []string{"sensor1/temp", "sensor2/temp"},
-		Tiempos: []int64{ahora, ahora + intervalo},
-		Valores: [][]float64{
-			{25.5, math.NaN()}, // bucket 0: sensor1 tiene dato, sensor2 no
-			{math.NaN(), 26.0}, // bucket 1: sensor1 no tiene, sensor2 sí
+		Series:       []string{"sensor1/temp", "sensor2/temp"},
+		Tiempos:      []int64{ahora, ahora + intervalo},
+		Agregaciones: []TipoAgregacion{AgregacionPromedio},
+		Valores: [][][]float64{
+			{ // agregación 0 (promedio)
+				{25.5, math.NaN()}, // bucket 0: sensor1 tiene dato, sensor2 no
+				{math.NaN(), 26.0}, // bucket 1: sensor1 no tiene, sensor2 sí
+			},
 		},
 	}
 
@@ -618,20 +725,20 @@ func TestSerializarDeserializarGob_ResultadoAgregacionTemporalConNaN(t *testing.
 		t.Fatalf("Error al deserializar ResultadoAgregacionTemporal con NaN: %v", err)
 	}
 
-	// Verificar que los NaN se preservan
-	if !math.IsNaN(deserializado.Valores[0][1]) {
-		t.Errorf("Valor [0][1] debería ser NaN, obtenido %f", deserializado.Valores[0][1])
+	// Verificar que los NaN se preservan [agregacion][bucket][serie]
+	if !math.IsNaN(deserializado.Valores[0][0][1]) {
+		t.Errorf("Valor [0][0][1] debería ser NaN, obtenido %f", deserializado.Valores[0][0][1])
 	}
-	if !math.IsNaN(deserializado.Valores[1][0]) {
-		t.Errorf("Valor [1][0] debería ser NaN, obtenido %f", deserializado.Valores[1][0])
+	if !math.IsNaN(deserializado.Valores[0][1][0]) {
+		t.Errorf("Valor [0][1][0] debería ser NaN, obtenido %f", deserializado.Valores[0][1][0])
 	}
 
 	// Verificar que los valores normales se preservan
-	if deserializado.Valores[0][0] != 25.5 {
-		t.Errorf("Valor [0][0] incorrecto: esperado 25.5, obtenido %f", deserializado.Valores[0][0])
+	if deserializado.Valores[0][0][0] != 25.5 {
+		t.Errorf("Valor [0][0][0] incorrecto: esperado 25.5, obtenido %f", deserializado.Valores[0][0][0])
 	}
-	if deserializado.Valores[1][1] != 26.0 {
-		t.Errorf("Valor [1][1] incorrecto: esperado 26.0, obtenido %f", deserializado.Valores[1][1])
+	if deserializado.Valores[0][1][1] != 26.0 {
+		t.Errorf("Valor [0][1][1] incorrecto: esperado 26.0, obtenido %f", deserializado.Valores[0][1][1])
 	}
 
 	t.Log("✓ ResultadoAgregacionTemporal con NaN serializado/deserializado correctamente")
@@ -644,9 +751,15 @@ func TestSerializarDeserializarGob_RespuestaConsultaAgregacionTemporal(t *testin
 
 	original := RespuestaConsultaAgregacionTemporal{
 		Resultado: ResultadoAgregacionTemporal{
-			Series:  []string{"sensor/temp"},
-			Tiempos: []int64{ahora, ahora + intervalo},
-			Valores: [][]float64{{25.5}, {26.0}},
+			Series:       []string{"sensor/temp"},
+			Tiempos:      []int64{ahora, ahora + intervalo},
+			Agregaciones: []TipoAgregacion{AgregacionPromedio},
+			Valores: [][][]float64{
+				{ // agregación 0
+					{25.5}, // bucket 0
+					{26.0}, // bucket 1
+				},
+			},
 		},
 		Error: "",
 	}
@@ -670,8 +783,9 @@ func TestSerializarDeserializarGob_RespuestaConsultaAgregacionTemporal(t *testin
 		t.Errorf("Cantidad de tiempos incorrecta: esperados 2, obtenidos %d", len(deserializada.Resultado.Tiempos))
 	}
 
-	if deserializada.Resultado.Valores[0][0] != 25.5 {
-		t.Errorf("Valor [0][0] incorrecto: esperado 25.5, obtenido %f", deserializada.Resultado.Valores[0][0])
+	// [agregacion][bucket][serie]
+	if deserializada.Resultado.Valores[0][0][0] != 25.5 {
+		t.Errorf("Valor [0][0][0] incorrecto: esperado 25.5, obtenido %f", deserializada.Resultado.Valores[0][0][0])
 	}
 
 	t.Log("✓ RespuestaConsultaAgregacionTemporal serializada/deserializada correctamente")

@@ -596,7 +596,7 @@ func TestConsultarUltimoPuntoEdge_Exitoso(t *testing.T) {
 		PuertoHTTP:  "8080",
 	}
 
-	resultado, err := m.consultarPuntoEdge(nodo, "/sensores/temp", 5*time.Second)
+	resultado, err := m.consultarPuntoEdge(nodo, "/sensores/temp", nil, nil, 5*time.Second)
 
 	assert.NoError(t, err)
 	require.Len(t, resultado.Series, 1)
@@ -622,7 +622,7 @@ func TestConsultarUltimoPuntoEdge_SinDatos(t *testing.T) {
 		PuertoHTTP:  "8080",
 	}
 
-	resultado, err := m.consultarPuntoEdge(nodo, "/sensores/temp", 5*time.Second)
+	resultado, err := m.consultarPuntoEdge(nodo, "/sensores/temp", nil, nil, 5*time.Second)
 
 	assert.NoError(t, err)
 	assert.Empty(t, resultado.Series)
@@ -645,7 +645,7 @@ func TestConsultarUltimoPuntoEdge_ErrorConexion(t *testing.T) {
 		PuertoHTTP:  "8080",
 	}
 
-	_, err := m.consultarPuntoEdge(nodo, "/sensores/temp", 5*time.Second)
+	_, err := m.consultarPuntoEdge(nodo, "/sensores/temp", nil, nil, 5*time.Second)
 
 	assert.Error(t, err)
 	t.Log("consultarPuntoEdge retorna error cuando hay falla de conexion")
@@ -669,7 +669,7 @@ func TestConsultarUltimoPuntoEdge_ErrorDelEdge(t *testing.T) {
 		PuertoHTTP:  "8080",
 	}
 
-	_, err := m.consultarPuntoEdge(nodo, "/sensores/temp", 5*time.Second)
+	_, err := m.consultarPuntoEdge(nodo, "/sensores/temp", nil, nil, 5*time.Second)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "serie no encontrada")
@@ -1154,7 +1154,7 @@ func TestConsultarUltimoPunto_SerieNoEncontrada(t *testing.T) {
 		nodos: make(map[string]*tipos.Nodo),
 	}
 
-	_, err := m.ConsultarUltimoPunto("/sensores/noexiste")
+	_, err := m.ConsultarUltimoPunto("/sensores/noexiste", nil, nil)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no encontrada")
@@ -1181,7 +1181,7 @@ func TestConsultarUltimoPunto_DesdeEdge(t *testing.T) {
 		clienteEdge: mockEdge,
 	}
 
-	resultado, err := m.ConsultarUltimoPunto("/sensores/temp")
+	resultado, err := m.ConsultarUltimoPunto("/sensores/temp", nil, nil)
 
 	assert.NoError(t, err)
 	require.Len(t, resultado.Series, 1)
@@ -1219,7 +1219,7 @@ func TestConsultarUltimoPunto_EdgeOffline_SinDatosS3(t *testing.T) {
 		config:      tipos.ConfiguracionS3{Bucket: "test-bucket"},
 	}
 
-	_, err := m.ConsultarUltimoPunto("/sensores/temp")
+	_, err := m.ConsultarUltimoPunto("/sensores/temp", nil, nil)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no se encontraron datos")
@@ -1662,7 +1662,7 @@ func TestConsultarUltimoPunto_DesdeS3(t *testing.T) {
 		config:      tipos.ConfiguracionS3{Bucket: "test-bucket"},
 	}
 
-	resultado, err := m.ConsultarUltimoPunto("/sensores/temp")
+	resultado, err := m.ConsultarUltimoPunto("/sensores/temp", nil, nil)
 
 	assert.NoError(t, err)
 	// Debe retornar la última medición del bloque en formato columnar
@@ -2058,7 +2058,7 @@ func TestConsultarAgregacion_SerieNoEncontrada(t *testing.T) {
 		nodos: make(map[string]*tipos.Nodo),
 	}
 
-	_, err := m.ConsultarAgregacion("/sensores/noexiste", time.Now().Add(-1*time.Hour), time.Now(), tipos.AgregacionPromedio)
+	_, err := m.ConsultarAgregacion("/sensores/noexiste", time.Now().Add(-1*time.Hour), time.Now(), []tipos.TipoAgregacion{tipos.AgregacionPromedio})
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no encontrada")
@@ -2102,12 +2102,12 @@ func TestConsultarAgregacion_Promedio(t *testing.T) {
 	inicio := time.Unix(0, 500)
 	fin := time.Unix(0, 3500)
 
-	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, tipos.AgregacionPromedio)
+	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionPromedio})
 
 	assert.NoError(t, err)
 	require.Len(t, resultado.Series, 1)
 	assert.Equal(t, "/sensores/temp", resultado.Series[0])
-	assert.Equal(t, 20.0, resultado.Valores[0]) // (10 + 20 + 30) / 3 = 20
+	assert.Equal(t, 20.0, resultado.Valores[0][0]) // [agregacion][serie] - (10 + 20 + 30) / 3 = 20
 	t.Log("ConsultarAgregacion calcula promedio correctamente")
 }
 
@@ -2148,11 +2148,11 @@ func TestConsultarAgregacion_Maximo(t *testing.T) {
 	inicio := time.Unix(0, 500)
 	fin := time.Unix(0, 3500)
 
-	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, tipos.AgregacionMaximo)
+	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionMaximo})
 
 	assert.NoError(t, err)
 	require.Len(t, resultado.Series, 1)
-	assert.Equal(t, 50.0, resultado.Valores[0])
+	assert.Equal(t, 50.0, resultado.Valores[0][0]) // [agregacion][serie]
 	t.Log("ConsultarAgregacion calcula maximo correctamente")
 }
 
@@ -2193,11 +2193,11 @@ func TestConsultarAgregacion_Minimo(t *testing.T) {
 	inicio := time.Unix(0, 500)
 	fin := time.Unix(0, 3500)
 
-	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, tipos.AgregacionMinimo)
+	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionMinimo})
 
 	assert.NoError(t, err)
 	require.Len(t, resultado.Series, 1)
-	assert.Equal(t, 5.0, resultado.Valores[0])
+	assert.Equal(t, 5.0, resultado.Valores[0][0]) // [agregacion][serie]
 	t.Log("ConsultarAgregacion calcula minimo correctamente")
 }
 
@@ -2238,11 +2238,11 @@ func TestConsultarAgregacion_Suma(t *testing.T) {
 	inicio := time.Unix(0, 500)
 	fin := time.Unix(0, 3500)
 
-	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, tipos.AgregacionSuma)
+	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionSuma})
 
 	assert.NoError(t, err)
 	require.Len(t, resultado.Series, 1)
-	assert.Equal(t, 60.0, resultado.Valores[0]) // 10 + 20 + 30 = 60
+	assert.Equal(t, 60.0, resultado.Valores[0][0]) // [agregacion][serie] - 10 + 20 + 30 = 60
 	t.Log("ConsultarAgregacion calcula suma correctamente")
 }
 
@@ -2283,11 +2283,11 @@ func TestConsultarAgregacion_Count(t *testing.T) {
 	inicio := time.Unix(0, 500)
 	fin := time.Unix(0, 3500)
 
-	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, tipos.AgregacionCount)
+	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionCount})
 
 	assert.NoError(t, err)
 	require.Len(t, resultado.Series, 1)
-	assert.Equal(t, 3.0, resultado.Valores[0])
+	assert.Equal(t, 3.0, resultado.Valores[0][0]) // [agregacion][serie]
 	t.Log("ConsultarAgregacion calcula count correctamente")
 }
 
@@ -2322,7 +2322,7 @@ func TestConsultarAgregacion_SinDatos(t *testing.T) {
 	inicio := time.Unix(0, 500)
 	fin := time.Unix(0, 3500)
 
-	_, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, tipos.AgregacionPromedio)
+	_, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionPromedio})
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no se encontraron datos")
@@ -2366,11 +2366,11 @@ func TestConsultarAgregacion_ConInt64(t *testing.T) {
 	inicio := time.Unix(0, 500)
 	fin := time.Unix(0, 3500)
 
-	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, tipos.AgregacionPromedio)
+	resultado, err := m.ConsultarAgregacion("/sensores/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionPromedio})
 
 	assert.NoError(t, err)
 	require.Len(t, resultado.Series, 1)
-	assert.Equal(t, 20.0, resultado.Valores[0])
+	assert.Equal(t, 20.0, resultado.Valores[0][0]) // [agregacion][serie]
 	t.Log("ConsultarAgregacion funciona con valores int64")
 }
 
@@ -2384,7 +2384,7 @@ func TestConsultarAgregacionTemporal_SerieNoEncontrada(t *testing.T) {
 		nodos: make(map[string]*tipos.Nodo),
 	}
 
-	_, err := m.ConsultarAgregacionTemporal("/sensores/noexiste", time.Now().Add(-1*time.Hour), time.Now(), tipos.AgregacionPromedio, time.Minute)
+	_, err := m.ConsultarAgregacionTemporal("/sensores/noexiste", time.Now().Add(-1*time.Hour), time.Now(), []tipos.TipoAgregacion{tipos.AgregacionPromedio}, time.Minute)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no encontrada")
@@ -2404,7 +2404,7 @@ func TestConsultarAgregacionTemporal_IntervaloInvalido(t *testing.T) {
 		},
 	}
 
-	_, err := m.ConsultarAgregacionTemporal("/sensores/temp", time.Now().Add(-1*time.Hour), time.Now(), tipos.AgregacionPromedio, 0)
+	_, err := m.ConsultarAgregacionTemporal("/sensores/temp", time.Now().Add(-1*time.Hour), time.Now(), []tipos.TipoAgregacion{tipos.AgregacionPromedio}, 0)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "intervalo debe ser mayor a cero")
@@ -2456,19 +2456,20 @@ func TestConsultarAgregacionTemporal_MultipleBuckets(t *testing.T) {
 	fin := time.Unix(0, 3000)
 	intervalo := time.Duration(1000) // 1000 nanosegundos
 
-	resultado, err := m.ConsultarAgregacionTemporal("/sensores/temp", inicio, fin, tipos.AgregacionPromedio, intervalo)
+	resultado, err := m.ConsultarAgregacionTemporal("/sensores/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionPromedio}, intervalo)
 
 	assert.NoError(t, err)
 	assert.Len(t, resultado.Tiempos, 3)
 	assert.Len(t, resultado.Series, 1)
 	assert.Equal(t, "/sensores/temp", resultado.Series[0])
 
+	// Valores[agregacion][bucket][serie]
 	// Bucket 1: promedio de 10 y 20 = 15
-	assert.Equal(t, 15.0, resultado.Valores[0][0])
+	assert.Equal(t, 15.0, resultado.Valores[0][0][0])
 	// Bucket 2: promedio de 30 y 40 = 35
-	assert.Equal(t, 35.0, resultado.Valores[1][0])
+	assert.Equal(t, 35.0, resultado.Valores[0][1][0])
 	// Bucket 3: promedio de 50 y 60 = 55
-	assert.Equal(t, 55.0, resultado.Valores[2][0])
+	assert.Equal(t, 55.0, resultado.Valores[0][2][0])
 
 	t.Log("ConsultarAgregacionTemporal genera multiples buckets correctamente")
 }
@@ -2504,7 +2505,7 @@ func TestConsultarAgregacionTemporal_SinDatos(t *testing.T) {
 	inicio := time.Unix(0, 0)
 	fin := time.Unix(0, 3000)
 
-	_, err := m.ConsultarAgregacionTemporal("/sensores/temp", inicio, fin, tipos.AgregacionPromedio, time.Second)
+	_, err := m.ConsultarAgregacionTemporal("/sensores/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionPromedio}, time.Second)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no se encontraron datos")
@@ -2550,7 +2551,7 @@ func TestConsultarAgregacionTemporal_OrdenCronologico(t *testing.T) {
 	fin := time.Unix(0, 3000)
 	intervalo := time.Duration(1000)
 
-	resultado, err := m.ConsultarAgregacionTemporal("/sensores/temp", inicio, fin, tipos.AgregacionPromedio, intervalo)
+	resultado, err := m.ConsultarAgregacionTemporal("/sensores/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionPromedio}, intervalo)
 
 	assert.NoError(t, err)
 	assert.Len(t, resultado.Tiempos, 3)
@@ -2794,14 +2795,15 @@ func TestConsultarAgregacion_Wildcard_MultiplesSeries(t *testing.T) {
 	// Ahora columnar: cada serie tiene su propio promedio
 	// serie1: (10 + 20) / 2 = 15
 	// serie2: (15 + 25) / 2 = 20
-	resultado, err := m.ConsultarAgregacion("*/temp", inicio, fin, tipos.AgregacionPromedio)
+	resultado, err := m.ConsultarAgregacion("*/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionPromedio})
 
 	assert.NoError(t, err)
 	require.Len(t, resultado.Series, 2)
 	assert.Equal(t, "sensor_01/temp", resultado.Series[0])
 	assert.Equal(t, "sensor_02/temp", resultado.Series[1])
-	assert.Equal(t, 15.0, resultado.Valores[0])
-	assert.Equal(t, 20.0, resultado.Valores[1])
+	// Valores[agregacion][serie]
+	assert.Equal(t, 15.0, resultado.Valores[0][0])
+	assert.Equal(t, 20.0, resultado.Valores[0][1])
 	t.Log("ConsultarAgregacion con wildcard retorna valores por serie")
 }
 
@@ -2821,7 +2823,7 @@ func TestConsultarAgregacion_Wildcard_SinCoincidencias(t *testing.T) {
 	inicio := time.Unix(0, 0)
 	fin := time.Unix(0, 1000)
 
-	_, err := m.ConsultarAgregacion("*/pressure", inicio, fin, tipos.AgregacionPromedio)
+	_, err := m.ConsultarAgregacion("*/pressure", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionPromedio})
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no encontrada")
@@ -2869,13 +2871,14 @@ func TestConsultarAgregacion_Wildcard_Suma(t *testing.T) {
 	fin := time.Unix(0, 2000)
 
 	// 3 series, cada una con valor 10 -> cada serie tiene suma = 10
-	resultado, err := m.ConsultarAgregacion("*/temp", inicio, fin, tipos.AgregacionSuma)
+	resultado, err := m.ConsultarAgregacion("*/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionSuma})
 
 	assert.NoError(t, err)
 	require.Len(t, resultado.Series, 3)
-	assert.Equal(t, 10.0, resultado.Valores[0])
-	assert.Equal(t, 10.0, resultado.Valores[1])
-	assert.Equal(t, 10.0, resultado.Valores[2])
+	// Valores[agregacion][serie]
+	assert.Equal(t, 10.0, resultado.Valores[0][0])
+	assert.Equal(t, 10.0, resultado.Valores[0][1])
+	assert.Equal(t, 10.0, resultado.Valores[0][2])
 	t.Log("ConsultarAgregacion con wildcard calcula suma por serie")
 }
 
@@ -2919,12 +2922,13 @@ func TestConsultarAgregacion_Wildcard_Count(t *testing.T) {
 	fin := time.Unix(0, 3000)
 
 	// 2 series x 2 mediciones = cada serie tiene count = 2
-	resultado, err := m.ConsultarAgregacion("*/temp", inicio, fin, tipos.AgregacionCount)
+	resultado, err := m.ConsultarAgregacion("*/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionCount})
 
 	assert.NoError(t, err)
 	require.Len(t, resultado.Series, 2)
-	assert.Equal(t, 2.0, resultado.Valores[0])
-	assert.Equal(t, 2.0, resultado.Valores[1])
+	// Valores[agregacion][serie]
+	assert.Equal(t, 2.0, resultado.Valores[0][0])
+	assert.Equal(t, 2.0, resultado.Valores[0][1])
 	t.Log("ConsultarAgregacion con wildcard calcula count por serie")
 }
 
@@ -2970,15 +2974,16 @@ func TestConsultarAgregacionTemporal_Wildcard(t *testing.T) {
 	fin := time.Unix(0, 1000)
 	intervalo := time.Duration(1000) // 1000ns = un solo bucket
 
-	resultado, err := m.ConsultarAgregacionTemporal("*/temp", inicio, fin, tipos.AgregacionPromedio, intervalo)
+	resultado, err := m.ConsultarAgregacionTemporal("*/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionPromedio}, intervalo)
 
 	assert.NoError(t, err)
 	assert.Len(t, resultado.Tiempos, 1)
 	assert.Len(t, resultado.Series, 2)
+	// Valores[agregacion][bucket][serie]
 	// Serie 1: promedio de 10 y 20 = 15
-	assert.Equal(t, 15.0, resultado.Valores[0][0])
+	assert.Equal(t, 15.0, resultado.Valores[0][0][0])
 	// Serie 2: promedio de 15 y 25 = 20
-	assert.Equal(t, 20.0, resultado.Valores[0][1])
+	assert.Equal(t, 20.0, resultado.Valores[0][0][1])
 	t.Log("ConsultarAgregacionTemporal con wildcard funciona correctamente")
 }
 
@@ -2998,7 +3003,7 @@ func TestConsultarAgregacionTemporal_Wildcard_SinCoincidencias(t *testing.T) {
 	inicio := time.Unix(0, 0)
 	fin := time.Unix(0, 1000)
 
-	_, err := m.ConsultarAgregacionTemporal("*/pressure", inicio, fin, tipos.AgregacionPromedio, time.Second)
+	_, err := m.ConsultarAgregacionTemporal("*/pressure", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionPromedio}, time.Second)
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no encontrada")
@@ -3045,16 +3050,231 @@ func TestConsultarAgregacionTemporal_Wildcard_MultipleBuckets(t *testing.T) {
 	fin := time.Unix(0, 2000)
 	intervalo := time.Duration(1000)
 
-	resultado, err := m.ConsultarAgregacionTemporal("*/temp", inicio, fin, tipos.AgregacionPromedio, intervalo)
+	resultado, err := m.ConsultarAgregacionTemporal("*/temp", inicio, fin, []tipos.TipoAgregacion{tipos.AgregacionPromedio}, intervalo)
 
 	assert.NoError(t, err)
 	assert.Len(t, resultado.Tiempos, 2)
 	assert.Len(t, resultado.Series, 2)
+	// Valores[agregacion][bucket][serie]
 	// Bucket 1: serie1=10.0, serie2=10.0
-	assert.Equal(t, 10.0, resultado.Valores[0][0])
-	assert.Equal(t, 10.0, resultado.Valores[0][1])
+	assert.Equal(t, 10.0, resultado.Valores[0][0][0])
+	assert.Equal(t, 10.0, resultado.Valores[0][0][1])
 	// Bucket 2: serie1=20.0, serie2=20.0
-	assert.Equal(t, 20.0, resultado.Valores[1][0])
-	assert.Equal(t, 20.0, resultado.Valores[1][1])
+	assert.Equal(t, 20.0, resultado.Valores[0][1][0])
+	assert.Equal(t, 20.0, resultado.Valores[0][1][1])
 	t.Log("ConsultarAgregacionTemporal con wildcard genera multiples buckets correctamente")
+}
+
+// ============================================================================
+// TESTS DE MÚLTIPLES AGREGACIONES (usando ConsultarAgregacion con slice)
+// ============================================================================
+
+// TestConsultarAgregacion_MultiplesAgregaciones_MinMax verifica min y max en una sola llamada
+func TestConsultarAgregacion_MultiplesAgregaciones_MinMax(t *testing.T) {
+	inicio := time.Now().Add(-1 * time.Hour)
+	fin := time.Now()
+
+	// Datos: 10, 20, 30, 40, 50
+	mediciones := []tipos.Medicion{
+		{Tiempo: inicio.Add(1 * time.Minute).UnixNano(), Valor: float64(10.0)},
+		{Tiempo: inicio.Add(2 * time.Minute).UnixNano(), Valor: float64(20.0)},
+		{Tiempo: inicio.Add(3 * time.Minute).UnixNano(), Valor: float64(30.0)},
+		{Tiempo: inicio.Add(4 * time.Minute).UnixNano(), Valor: float64(40.0)},
+		{Tiempo: inicio.Add(5 * time.Minute).UnixNano(), Valor: float64(50.0)},
+	}
+
+	mockEdge := &mockClienteEdge{
+		respuestaRango: crearRespuestaRangoTabular("/sensores/temp", mediciones),
+	}
+
+	mockS3 := &mockClienteS3{
+		listObjectsOutput: &s3.ListObjectsV2Output{
+			Contents: []s3types.Object{},
+		},
+	}
+
+	m := &ManagerDespachador{
+		nodos: map[string]*tipos.Nodo{
+			"nodo1": {
+				NodoID:      "nodo1",
+				DireccionIP: "192.168.1.100",
+				PuertoHTTP:  "8080",
+				Series: map[string]tipos.Serie{
+					"/sensores/temp": {SerieId: 1, Path: "/sensores/temp"},
+				},
+			},
+		},
+		clienteEdge: mockEdge,
+		s3:          mockS3,
+		config:      tipos.ConfiguracionS3{Bucket: "test-bucket"},
+	}
+
+	resultado, err := m.ConsultarAgregacion(
+		"/sensores/temp",
+		inicio, fin,
+		[]tipos.TipoAgregacion{tipos.AgregacionMinimo, tipos.AgregacionMaximo},
+	)
+
+	assert.NoError(t, err)
+	assert.Len(t, resultado.Series, 1)
+	// Valores[agregacion][serie] - agregacion 0 = Minimo, agregacion 1 = Maximo
+	assert.Equal(t, 10.0, resultado.Valores[0][0]) // Minimo de serie 0
+	assert.Equal(t, 50.0, resultado.Valores[1][0]) // Maximo de serie 0
+	t.Log("ConsultarAgregacion con múltiples agregaciones calcula min y max correctamente")
+}
+
+// TestConsultarAgregacion_MultiplesAgregaciones_TodasLasAgregaciones verifica todas las agregaciones
+func TestConsultarAgregacion_MultiplesAgregaciones_TodasLasAgregaciones(t *testing.T) {
+	inicio := time.Now().Add(-1 * time.Hour)
+	fin := time.Now()
+
+	// Datos: 10, 20, 30, 40, 50 (suma=150, promedio=30, count=5)
+	mediciones := []tipos.Medicion{
+		{Tiempo: inicio.Add(1 * time.Minute).UnixNano(), Valor: float64(10.0)},
+		{Tiempo: inicio.Add(2 * time.Minute).UnixNano(), Valor: float64(20.0)},
+		{Tiempo: inicio.Add(3 * time.Minute).UnixNano(), Valor: float64(30.0)},
+		{Tiempo: inicio.Add(4 * time.Minute).UnixNano(), Valor: float64(40.0)},
+		{Tiempo: inicio.Add(5 * time.Minute).UnixNano(), Valor: float64(50.0)},
+	}
+
+	mockEdge := &mockClienteEdge{
+		respuestaRango: crearRespuestaRangoTabular("/sensores/temp", mediciones),
+	}
+
+	mockS3 := &mockClienteS3{
+		listObjectsOutput: &s3.ListObjectsV2Output{
+			Contents: []s3types.Object{},
+		},
+	}
+
+	m := &ManagerDespachador{
+		nodos: map[string]*tipos.Nodo{
+			"nodo1": {
+				NodoID:      "nodo1",
+				DireccionIP: "192.168.1.100",
+				PuertoHTTP:  "8080",
+				Series: map[string]tipos.Serie{
+					"/sensores/temp": {SerieId: 1, Path: "/sensores/temp"},
+				},
+			},
+		},
+		clienteEdge: mockEdge,
+		s3:          mockS3,
+		config:      tipos.ConfiguracionS3{Bucket: "test-bucket"},
+	}
+
+	resultado, err := m.ConsultarAgregacion(
+		"/sensores/temp",
+		inicio, fin,
+		[]tipos.TipoAgregacion{
+			tipos.AgregacionMinimo,
+			tipos.AgregacionMaximo,
+			tipos.AgregacionPromedio,
+			tipos.AgregacionSuma,
+			tipos.AgregacionCount,
+		},
+	)
+
+	assert.NoError(t, err)
+	// Valores[agregacion][serie]
+	assert.Equal(t, 10.0, resultado.Valores[0][0])  // Minimo
+	assert.Equal(t, 50.0, resultado.Valores[1][0])  // Maximo
+	assert.Equal(t, 30.0, resultado.Valores[2][0])  // Promedio
+	assert.Equal(t, 150.0, resultado.Valores[3][0]) // Suma
+	assert.Equal(t, 5.0, resultado.Valores[4][0])   // Count
+	t.Log("ConsultarAgregacion con múltiples agregaciones calcula todas correctamente")
+}
+
+// TestConsultarAgregacion_MultiplesAgregaciones_SinAgregaciones verifica error sin agregaciones
+func TestConsultarAgregacion_MultiplesAgregaciones_SinAgregaciones(t *testing.T) {
+	m := &ManagerDespachador{
+		nodos: map[string]*tipos.Nodo{
+			"nodo1": {
+				NodoID: "nodo1",
+				Series: map[string]tipos.Serie{
+					"/sensores/temp": {SerieId: 1, Path: "/sensores/temp"},
+				},
+			},
+		},
+	}
+
+	_, err := m.ConsultarAgregacion(
+		"/sensores/temp",
+		time.Now().Add(-1*time.Hour),
+		time.Now(),
+		[]tipos.TipoAgregacion{}, // Lista vacía
+	)
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "al menos una agregación")
+	t.Log("ConsultarAgregacion retorna error sin agregaciones")
+}
+
+// TestConsultarAgregacion_MultiplesAgregaciones_Wildcard verifica múltiples agregaciones con wildcard
+func TestConsultarAgregacion_MultiplesAgregaciones_Wildcard(t *testing.T) {
+	inicio := time.Now().Add(-1 * time.Hour)
+	fin := time.Now()
+
+	// Crear respuesta con dos series
+	tiempos := []int64{
+		inicio.Add(1 * time.Minute).UnixNano(),
+		inicio.Add(2 * time.Minute).UnixNano(),
+	}
+	valores := [][]interface{}{
+		{float64(10.0), float64(100.0)}, // t1: serie1=10, serie2=100
+		{float64(20.0), float64(200.0)}, // t2: serie1=20, serie2=200
+	}
+
+	mockEdge := &mockClienteEdge{
+		respuestaRango: &tipos.RespuestaConsultaRango{
+			Resultado: tipos.ResultadoConsultaRango{
+				Series:  []string{"sensor_01/temp", "sensor_02/temp"},
+				Tiempos: tiempos,
+				Valores: valores,
+			},
+		},
+	}
+
+	mockS3 := &mockClienteS3{
+		listObjectsOutput: &s3.ListObjectsV2Output{
+			Contents: []s3types.Object{},
+		},
+	}
+
+	m := &ManagerDespachador{
+		nodos: map[string]*tipos.Nodo{
+			"nodo1": {
+				NodoID:      "nodo1",
+				DireccionIP: "192.168.1.100",
+				PuertoHTTP:  "8080",
+				Series: map[string]tipos.Serie{
+					"sensor_01/temp": {SerieId: 1, Path: "sensor_01/temp"},
+					"sensor_02/temp": {SerieId: 2, Path: "sensor_02/temp"},
+				},
+			},
+		},
+		clienteEdge: mockEdge,
+		s3:          mockS3,
+		config:      tipos.ConfiguracionS3{Bucket: "test-bucket"},
+	}
+
+	resultado, err := m.ConsultarAgregacion(
+		"*/temp",
+		inicio, fin,
+		[]tipos.TipoAgregacion{tipos.AgregacionMinimo, tipos.AgregacionMaximo},
+	)
+
+	assert.NoError(t, err)
+	assert.Len(t, resultado.Series, 2)
+
+	// Valores[agregacion][serie]
+	// Serie 1: min=10, max=20
+	assert.Equal(t, 10.0, resultado.Valores[0][0]) // Minimo serie 0
+	assert.Equal(t, 20.0, resultado.Valores[1][0]) // Maximo serie 0
+
+	// Serie 2: min=100, max=200
+	assert.Equal(t, 100.0, resultado.Valores[0][1]) // Minimo serie 1
+	assert.Equal(t, 200.0, resultado.Valores[1][1]) // Maximo serie 1
+
+	t.Log("ConsultarAgregacion con múltiples agregaciones y wildcard funciona correctamente")
 }

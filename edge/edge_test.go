@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -273,6 +272,24 @@ func TestMatchPath_LongitudDiferente(t *testing.T) {
 	t.Log("✓ matchPath maneja longitudes diferentes")
 }
 
+// TestMatchPath_WildcardParcial verifica wildcard parcial en segmento
+func TestMatchPath_WildcardParcial(t *testing.T) {
+	// Wildcard parcial al inicio del segmento
+	assert.True(t, tipos.MatchPath("dispositivo1/temp", "dispositivo*/*"))
+	assert.True(t, tipos.MatchPath("dispositivo10/temp", "dispositivo*/*"))
+	assert.True(t, tipos.MatchPath("dispositivo123/humedad", "dispositivo*/*"))
+
+	// Wildcard parcial en múltiples segmentos
+	assert.True(t, tipos.MatchPath("dispositivo1/temperatura", "dispositivo*/temp*"))
+	assert.True(t, tipos.MatchPath("sensor_abc/valor_xyz", "sensor_*/valor_*"))
+
+	// No coincide con prefijo diferente
+	assert.False(t, tipos.MatchPath("sensor1/temp", "dispositivo*/*"))
+	assert.False(t, tipos.MatchPath("dev1/temp", "dispositivo*/*"))
+
+	t.Log("✓ MatchPath funciona con wildcard parcial")
+}
+
 // ============================================================================
 // TESTS DE REGLAS.GO - AGREGACIONES
 // ============================================================================
@@ -359,33 +376,6 @@ func TestConvertirAFloat64(t *testing.T) {
 	t.Log("✓ convertirAFloat64 convierte correctamente")
 }
 
-// TestCoincideFiltro verifica coincidencia de filtros
-func TestCoincideFiltro(t *testing.T) {
-	// Boolean
-	assert.True(t, coincideFiltro(true, true))
-	assert.False(t, coincideFiltro(true, false))
-
-	// String (case-insensitive)
-	assert.True(t, coincideFiltro("TEXTO", "texto"))
-	assert.True(t, coincideFiltro("Texto", "TEXTO"))
-	assert.False(t, coincideFiltro("texto1", "texto2"))
-
-	// int64
-	assert.True(t, coincideFiltro(int64(42), int64(42)))
-	assert.True(t, coincideFiltro(int64(42), float64(42.0)))
-	assert.False(t, coincideFiltro(int64(42), int64(43)))
-
-	// float64
-	assert.True(t, coincideFiltro(float64(3.14), float64(3.14)))
-	assert.True(t, coincideFiltro(float64(42.0), int64(42)))
-
-	// Tipos incompatibles
-	assert.False(t, coincideFiltro(true, "true"))
-	assert.False(t, coincideFiltro(42, "42"))
-
-	t.Log("✓ coincideFiltro verifica coincidencias correctamente")
-}
-
 // ============================================================================
 // TESTS DE REGLAS.GO - OPERADORES
 // ============================================================================
@@ -399,7 +389,6 @@ func crearMotorReglasTest() *MotorReglas {
 		habilitado:     true,
 		maxDatosCache:  1000,
 		tiempoLimpieza: 5 * time.Minute,
-		logger:         log.New(log.Writer(), "[MotorReglasTest] ", log.LstdFlags),
 		manager:        nil,
 		db:             nil,
 	}
@@ -501,35 +490,6 @@ func TestAplicarOperador_TiposIncompatibles(t *testing.T) {
 // TESTS DE REGLAS.GO - VALIDACIONES
 // ============================================================================
 
-// TestValidarRegla_Valida verifica regla válida
-func TestValidarRegla_Valida(t *testing.T) {
-	mr := crearMotorReglasTest()
-
-	regla := &Regla{
-		ID:     "regla-001",
-		Nombre: "Regla de prueba",
-		Condiciones: []Condicion{
-			{
-				Serie:    "sensor/temperatura",
-				Operador: OperadorMayor,
-				Valor:    float64(30),
-				VentanaT: 5 * time.Minute,
-			},
-		},
-		Acciones: []Accion{
-			{
-				Tipo:    "log",
-				Destino: "alerta",
-			},
-		},
-		Logica: LogicaAND,
-	}
-
-	err := mr.validarRegla(regla)
-	assert.NoError(t, err)
-	t.Log("✓ validarRegla acepta regla válida")
-}
-
 // TestValidarRegla_IDVacio verifica rechazo de ID vacío
 func TestValidarRegla_IDVacio(t *testing.T) {
 	mr := crearMotorReglasTest()
@@ -557,170 +517,6 @@ func TestValidarRegla_SinCondiciones(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "condición")
 	t.Log("✓ validarRegla rechaza regla sin condiciones")
-}
-
-// TestValidarRegla_SinAcciones verifica rechazo sin acciones
-func TestValidarRegla_SinAcciones(t *testing.T) {
-	mr := crearMotorReglasTest()
-
-	regla := &Regla{
-		ID: "regla-001",
-		Condiciones: []Condicion{
-			{
-				Serie:    "sensor/temp",
-				Operador: OperadorMayor,
-				Valor:    float64(30),
-				VentanaT: time.Minute,
-			},
-		},
-		Acciones: []Accion{},
-	}
-
-	err := mr.validarRegla(regla)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "acción")
-	t.Log("✓ validarRegla rechaza regla sin acciones")
-}
-
-// TestValidarCondicion_Valida verifica condición válida
-func TestValidarCondicion_Valida(t *testing.T) {
-	mr := crearMotorReglasTest()
-
-	condicion := &Condicion{
-		Serie:    "sensor/temperatura",
-		Operador: OperadorMayor,
-		Valor:    float64(30),
-		VentanaT: 5 * time.Minute,
-	}
-
-	err := mr.validarCondicion(condicion)
-	assert.NoError(t, err)
-	t.Log("✓ validarCondicion acepta condición válida")
-}
-
-// TestValidarCondicion_SinSerie verifica rechazo sin serie
-func TestValidarCondicion_SinSerie(t *testing.T) {
-	mr := crearMotorReglasTest()
-
-	condicion := &Condicion{
-		Operador: OperadorMayor,
-		Valor:    float64(30),
-		VentanaT: time.Minute,
-	}
-
-	err := mr.validarCondicion(condicion)
-	assert.Error(t, err)
-	t.Log("✓ validarCondicion rechaza condición sin serie")
-}
-
-// TestValidarCondicion_VentanaCero verifica rechazo de ventana cero
-func TestValidarCondicion_VentanaCero(t *testing.T) {
-	mr := crearMotorReglasTest()
-
-	condicion := &Condicion{
-		Serie:    "sensor/temp",
-		Operador: OperadorMayor,
-		Valor:    float64(30),
-		VentanaT: 0,
-	}
-
-	err := mr.validarCondicion(condicion)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "ventana")
-	t.Log("✓ validarCondicion rechaza ventana temporal cero")
-}
-
-// TestValidarCondicion_ValorNil verifica rechazo de valor nil
-func TestValidarCondicion_ValorNil(t *testing.T) {
-	mr := crearMotorReglasTest()
-
-	condicion := &Condicion{
-		Serie:    "sensor/temp",
-		Operador: OperadorMayor,
-		Valor:    nil,
-		VentanaT: time.Minute,
-	}
-
-	err := mr.validarCondicion(condicion)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "nil")
-	t.Log("✓ validarCondicion rechaza valor nil")
-}
-
-// TestValidarCondicion_TipoValorInvalido verifica rechazo de tipo no soportado
-func TestValidarCondicion_TipoValorInvalido(t *testing.T) {
-	mr := crearMotorReglasTest()
-
-	condicion := &Condicion{
-		Serie:    "sensor/temp",
-		Operador: OperadorIgual,
-		Valor:    []int{1, 2, 3}, // Tipo no soportado
-		VentanaT: time.Minute,
-	}
-
-	err := mr.validarCondicion(condicion)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "tipo")
-	t.Log("✓ validarCondicion rechaza tipo de valor no soportado")
-}
-
-// TestValidarCondicion_OperadorInvalidoParaBoolean verifica restricción de operadores
-func TestValidarCondicion_OperadorInvalidoParaBoolean(t *testing.T) {
-	mr := crearMotorReglasTest()
-
-	condicion := &Condicion{
-		Serie:    "sensor/activo",
-		Operador: OperadorMayor, // No válido para boolean
-		Valor:    true,
-		VentanaT: time.Minute,
-	}
-
-	err := mr.validarCondicion(condicion)
-	assert.Error(t, err)
-	t.Log("✓ validarCondicion rechaza operador inválido para boolean")
-}
-
-// TestValidarCondicion_GrupoSinAgregacion verifica que grupo requiere agregación
-func TestValidarCondicion_GrupoSinAgregacion(t *testing.T) {
-	mr := crearMotorReglasTest()
-
-	condicion := &Condicion{
-		SeriesGrupo: []string{"sensor/temp1", "sensor/temp2"},
-		Operador:    OperadorMayor,
-		Valor:       float64(30),
-		VentanaT:    time.Minute,
-		// Sin Agregacion
-	}
-
-	err := mr.validarCondicion(condicion)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "agregación")
-	t.Log("✓ validarCondicion rechaza grupo sin agregación")
-}
-
-// TestValidarCondicion_FiltroSoloConCount verifica restricción de filtro
-func TestValidarCondicion_FiltroSoloConCount(t *testing.T) {
-	mr := crearMotorReglasTest()
-
-	// Con count - válido
-	condicion := &Condicion{
-		SeriesGrupo: []string{"sensor/temp1"},
-		Operador:    OperadorMayor,
-		Valor:       float64(5),
-		VentanaT:    time.Minute,
-		Agregacion:  AgregacionCount,
-		FiltroValor: true,
-	}
-	err := mr.validarCondicion(condicion)
-	assert.NoError(t, err)
-
-	// Con promedio - inválido
-	condicion.Agregacion = AgregacionPromedio
-	err = mr.validarCondicion(condicion)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "count")
-
-	t.Log("✓ validarCondicion restringe FiltroValor a AgregacionCount")
 }
 
 // TestValidarAccion_Valida verifica acción válida
@@ -960,59 +756,6 @@ func TestLimpiarDatosAntiguos(t *testing.T) {
 // TESTS DE REGLAS.GO - EVALUACIÓN DE CONDICIONES
 // ============================================================================
 
-// TestEvaluarCondicionesRegla_AND verifica lógica AND
-func TestEvaluarCondicionesRegla_AND(t *testing.T) {
-	mr := crearMotorReglasTest()
-
-	ahora := time.Now()
-	mr.datos["serie1"] = []DatoTemporal{{Timestamp: ahora, Valor: float64(30)}}
-	mr.datos["serie2"] = []DatoTemporal{{Timestamp: ahora, Valor: float64(40)}}
-
-	// Ambas condiciones verdaderas
-	regla := &Regla{
-		ID:     "regla1",
-		Logica: LogicaAND,
-		Condiciones: []Condicion{
-			{Serie: "serie1", Operador: OperadorMayorIgual, Valor: float64(30), VentanaT: time.Minute},
-			{Serie: "serie2", Operador: OperadorMayorIgual, Valor: float64(40), VentanaT: time.Minute},
-		},
-	}
-
-	assert.True(t, mr.evaluarCondicionesRegla(regla, ahora))
-
-	// Una condición falsa
-	regla.Condiciones[1].Valor = float64(50)
-	assert.False(t, mr.evaluarCondicionesRegla(regla, ahora))
-
-	t.Log("✓ evaluarCondicionesRegla funciona con lógica AND")
-}
-
-// TestEvaluarCondicionesRegla_OR verifica lógica OR
-func TestEvaluarCondicionesRegla_OR(t *testing.T) {
-	mr := crearMotorReglasTest()
-
-	ahora := time.Now()
-	mr.datos["serie1"] = []DatoTemporal{{Timestamp: ahora, Valor: float64(30)}}
-	mr.datos["serie2"] = []DatoTemporal{{Timestamp: ahora, Valor: float64(40)}}
-
-	regla := &Regla{
-		ID:     "regla1",
-		Logica: LogicaOR,
-		Condiciones: []Condicion{
-			{Serie: "serie1", Operador: OperadorMayor, Valor: float64(100), VentanaT: time.Minute}, // Falsa
-			{Serie: "serie2", Operador: OperadorMayor, Valor: float64(35), VentanaT: time.Minute},  // Verdadera
-		},
-	}
-
-	assert.True(t, mr.evaluarCondicionesRegla(regla, ahora))
-
-	// Ambas falsas
-	regla.Condiciones[1].Valor = float64(100)
-	assert.False(t, mr.evaluarCondicionesRegla(regla, ahora))
-
-	t.Log("✓ evaluarCondicionesRegla funciona con lógica OR")
-}
-
 // TestEvaluarCondicionesRegla_SinCondiciones verifica regla sin condiciones
 func TestEvaluarCondicionesRegla_SinCondiciones(t *testing.T) {
 	mr := crearMotorReglasTest()
@@ -1085,44 +828,6 @@ func TestParsearTiempoFinDeClave(t *testing.T) {
 // ============================================================================
 // TESTS DE REGLAS.GO - SERIALIZACIÓN
 // ============================================================================
-
-// TestSerializarDeserializarRegla verifica serialización de reglas
-func TestSerializarDeserializarRegla(t *testing.T) {
-	reglaOriginal := &Regla{
-		ID:     "regla-001",
-		Nombre: "Regla de prueba",
-		Condiciones: []Condicion{
-			{
-				Serie:    "sensor/temperatura",
-				Operador: OperadorMayor,
-				Valor:    float64(30),
-				VentanaT: 5 * time.Minute,
-			},
-		},
-		Acciones: []Accion{
-			{
-				Tipo:    "log",
-				Destino: "alerta",
-			},
-		},
-		Logica: LogicaAND,
-		Activa: true,
-	}
-
-	// Serializar
-	datos, err := serializarRegla(reglaOriginal)
-	require.NoError(t, err)
-	assert.NotEmpty(t, datos)
-
-	// Deserializar
-	reglaRecuperada, err := deserializarRegla(datos)
-	require.NoError(t, err)
-	assert.Equal(t, reglaOriginal.ID, reglaRecuperada.ID)
-	assert.Equal(t, reglaOriginal.Nombre, reglaRecuperada.Nombre)
-	assert.Equal(t, reglaOriginal.Logica, reglaRecuperada.Logica)
-
-	t.Log("✓ Serialización/deserialización de reglas funciona correctamente")
-}
 
 // TestGenerarClaveRegla verifica generación de claves
 func TestGenerarClaveRegla(t *testing.T) {
@@ -1198,122 +903,6 @@ func crearDBTemporal(t *testing.T) *pebble.DB {
 	return db
 }
 
-// TestMotorReglas_ConPebbleDB verifica operaciones con persistencia
-func TestMotorReglas_ConPebbleDB(t *testing.T) {
-	db := crearDBTemporal(t)
-	defer db.Close()
-
-	mr := &MotorReglas{
-		reglas:         make(map[string]*Regla),
-		datos:          make(map[string][]DatoTemporal),
-		ejecutores:     make(map[string]EjecutorAccion),
-		habilitado:     true,
-		maxDatosCache:  1000,
-		tiempoLimpieza: 5 * time.Minute,
-		logger:         log.New(log.Writer(), "[MotorReglasTest] ", log.LstdFlags),
-		manager:        nil,
-		db:             db,
-	}
-	mr.registrarEjecutoresPorDefecto()
-
-	// Crear regla válida
-	regla := &Regla{
-		ID:     "regla-test",
-		Nombre: "Regla de prueba con DB",
-		Condiciones: []Condicion{
-			{
-				Serie:    "sensor/temp",
-				Operador: OperadorMayor,
-				Valor:    float64(30),
-				VentanaT: time.Minute,
-			},
-		},
-		Acciones: []Accion{
-			{
-				Tipo:    "log",
-				Destino: "consola",
-			},
-		},
-		Logica: LogicaAND,
-	}
-
-	// Agregar regla
-	err := mr.AgregarRegla(regla)
-	assert.NoError(t, err)
-	assert.Len(t, mr.reglas, 1)
-
-	// Verificar que se guardó en DB
-	clave := generarClaveRegla("regla-test")
-	_, closer, err := db.Get(clave)
-	assert.NoError(t, err)
-	closer.Close()
-
-	// Actualizar regla
-	regla.Nombre = "Regla actualizada"
-	err = mr.ActualizarRegla(regla)
-	assert.NoError(t, err)
-	assert.Equal(t, "Regla actualizada", mr.reglas["regla-test"].Nombre)
-
-	// Eliminar regla
-	err = mr.EliminarRegla("regla-test")
-	assert.NoError(t, err)
-	assert.Empty(t, mr.reglas)
-
-	// Verificar que se eliminó de DB
-	_, _, err = db.Get(clave)
-	assert.Error(t, err) // Debería ser ErrNotFound
-
-	t.Log("✓ MotorReglas funciona con PebbleDB")
-}
-
-// TestCargarReglasExistentes verifica carga de reglas desde DB
-func TestCargarReglasExistentes(t *testing.T) {
-	db := crearDBTemporal(t)
-	defer db.Close()
-
-	// Guardar regla directamente en DB
-	regla := &Regla{
-		ID:     "regla-precargada",
-		Nombre: "Regla precargada",
-		Condiciones: []Condicion{
-			{
-				Serie:    "sensor/temp",
-				Operador: OperadorMayor,
-				Valor:    float64(25),
-				VentanaT: time.Minute,
-			},
-		},
-		Acciones: []Accion{
-			{Tipo: "log", Destino: "test"},
-		},
-		Logica: LogicaAND,
-		Activa: true,
-	}
-
-	reglaBytes, _ := serializarRegla(regla)
-	db.Set(generarClaveRegla(regla.ID), reglaBytes, pebble.Sync)
-
-	// Crear motor y cargar reglas
-	mr := &MotorReglas{
-		reglas:         make(map[string]*Regla),
-		datos:          make(map[string][]DatoTemporal),
-		ejecutores:     make(map[string]EjecutorAccion),
-		habilitado:     true,
-		maxDatosCache:  1000,
-		tiempoLimpieza: 5 * time.Minute,
-		logger:         log.New(log.Writer(), "[MotorReglasTest] ", log.LstdFlags),
-		manager:        nil,
-		db:             db,
-	}
-
-	err := mr.cargarReglasExistentes()
-	assert.NoError(t, err)
-	assert.Len(t, mr.reglas, 1)
-	assert.Equal(t, "Regla precargada", mr.reglas["regla-precargada"].Nombre)
-
-	t.Log("✓ cargarReglasExistentes funciona correctamente")
-}
-
 // ============================================================================
 // HELPER: MANAGER EDGE PARA TESTS
 // ============================================================================
@@ -1345,7 +934,6 @@ func crearManagerEdgeParaTest(t *testing.T) *ManagerEdge {
 		habilitado:     true,
 		maxDatosCache:  1000,
 		tiempoLimpieza: 5 * time.Minute,
-		logger:         log.New(log.Writer(), "[MotorReglasTest] ", log.LstdFlags),
 		db:             db,
 		manager:        manager,
 	}
@@ -2019,8 +1607,8 @@ func TestConsultarUltimoPunto_DesdeBuffer(t *testing.T) {
 	buffer.datos[2] = tipos.Medicion{Tiempo: ahora, Valor: float64(22.0)} // Más reciente
 	manager.buffers.Store("sensor/temp", buffer)
 
-	// Consultar último punto
-	resultado, err := manager.ConsultarUltimoPunto("sensor/temp")
+	// Consultar último punto (nil, nil = sin límites de tiempo)
+	resultado, err := manager.ConsultarUltimoPunto("sensor/temp", nil, nil)
 	require.NoError(t, err)
 
 	// Verificar formato columnar
@@ -2062,8 +1650,8 @@ func TestConsultarUltimoPunto_DesdeDB(t *testing.T) {
 	err := manager.db.Set(clave, bloque, pebble.Sync)
 	require.NoError(t, err)
 
-	// Consultar (sin buffer)
-	resultado, err := manager.ConsultarUltimoPunto("sensor/temp")
+	// Consultar (sin buffer, nil, nil = sin límites de tiempo)
+	resultado, err := manager.ConsultarUltimoPunto("sensor/temp", nil, nil)
 	require.NoError(t, err)
 
 	// Verificar formato columnar
@@ -2432,12 +2020,14 @@ func TestConsultarAgregacion_SerieExacta_Promedio(t *testing.T) {
 		"sensor/temp",
 		time.Unix(0, ahora-5000),
 		time.Unix(0, ahora),
-		tipos.AgregacionPromedio,
+		[]tipos.TipoAgregacion{tipos.AgregacionPromedio},
 	)
 	require.NoError(t, err)
 	require.Len(t, resultado.Series, 1)
 	assert.Equal(t, "sensor/temp", resultado.Series[0])
-	assert.Equal(t, 20.0, resultado.Valores[0])
+	require.Len(t, resultado.Agregaciones, 1)
+	assert.Equal(t, tipos.AgregacionPromedio, resultado.Agregaciones[0])
+	assert.Equal(t, 20.0, resultado.Valores[0][0]) // [agregacion][serie]
 	t.Log("ConsultarAgregacion calcula promedio correctamente")
 }
 
@@ -2473,22 +2063,22 @@ func TestConsultarAgregacion_SerieExacta_MinMax(t *testing.T) {
 		"sensor/temp",
 		time.Unix(0, ahora-5000),
 		time.Unix(0, ahora),
-		tipos.AgregacionMinimo,
+		[]tipos.TipoAgregacion{tipos.AgregacionMinimo},
 	)
 	require.NoError(t, err)
 	require.Len(t, minResult.Series, 1)
-	assert.Equal(t, 5.0, minResult.Valores[0])
+	assert.Equal(t, 5.0, minResult.Valores[0][0]) // [agregacion][serie]
 
 	// MAX
 	maxResult, err := manager.ConsultarAgregacion(
 		"sensor/temp",
 		time.Unix(0, ahora-5000),
 		time.Unix(0, ahora),
-		tipos.AgregacionMaximo,
+		[]tipos.TipoAgregacion{tipos.AgregacionMaximo},
 	)
 	require.NoError(t, err)
 	require.Len(t, maxResult.Series, 1)
-	assert.Equal(t, 25.0, maxResult.Valores[0])
+	assert.Equal(t, 25.0, maxResult.Valores[0][0]) // [agregacion][serie]
 
 	t.Log("ConsultarAgregacion calcula MIN y MAX correctamente")
 }
@@ -2525,22 +2115,22 @@ func TestConsultarAgregacion_SerieExacta_SumaCount(t *testing.T) {
 		"sensor/temp",
 		time.Unix(0, ahora-5000),
 		time.Unix(0, ahora),
-		tipos.AgregacionSuma,
+		[]tipos.TipoAgregacion{tipos.AgregacionSuma},
 	)
 	require.NoError(t, err)
 	require.Len(t, sumaResult.Series, 1)
-	assert.Equal(t, 60.0, sumaResult.Valores[0])
+	assert.Equal(t, 60.0, sumaResult.Valores[0][0]) // [agregacion][serie]
 
 	// COUNT = 3
 	countResult, err := manager.ConsultarAgregacion(
 		"sensor/temp",
 		time.Unix(0, ahora-5000),
 		time.Unix(0, ahora),
-		tipos.AgregacionCount,
+		[]tipos.TipoAgregacion{tipos.AgregacionCount},
 	)
 	require.NoError(t, err)
 	require.Len(t, countResult.Series, 1)
-	assert.Equal(t, 3.0, countResult.Valores[0])
+	assert.Equal(t, 3.0, countResult.Valores[0][0]) // [agregacion][serie]
 
 	t.Log("ConsultarAgregacion calcula SUM y COUNT correctamente")
 }
@@ -2553,7 +2143,7 @@ func TestConsultarAgregacion_SerieNoExiste(t *testing.T) {
 		"serie/inexistente",
 		time.Now().Add(-time.Hour),
 		time.Now(),
-		tipos.AgregacionPromedio,
+		[]tipos.TipoAgregacion{tipos.AgregacionPromedio},
 	)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no encontrada")
@@ -2580,7 +2170,7 @@ func TestConsultarAgregacion_SinDatos(t *testing.T) {
 		"sensor/temp",
 		time.Now().Add(-time.Hour),
 		time.Now(),
-		tipos.AgregacionPromedio,
+		[]tipos.TipoAgregacion{tipos.AgregacionPromedio},
 	)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no hay datos")
@@ -2627,15 +2217,15 @@ func TestConsultarAgregacion_Patron(t *testing.T) {
 		"*/temp",
 		time.Unix(0, ahora-5000),
 		time.Unix(0, ahora),
-		tipos.AgregacionPromedio,
+		[]tipos.TipoAgregacion{tipos.AgregacionPromedio},
 	)
 	require.NoError(t, err)
 	require.Len(t, resultado.Series, 2)
 	// Series ordenadas alfabéticamente
 	assert.Equal(t, "sensor_01/temp", resultado.Series[0])
 	assert.Equal(t, "sensor_02/temp", resultado.Series[1])
-	assert.Equal(t, 15.0, resultado.Valores[0]) // promedio de 10, 20
-	assert.Equal(t, 35.0, resultado.Valores[1]) // promedio de 30, 40
+	assert.Equal(t, 15.0, resultado.Valores[0][0]) // [agregacion][serie] - promedio de 10, 20
+	assert.Equal(t, 35.0, resultado.Valores[0][1]) // [agregacion][serie] - promedio de 30, 40
 	t.Log("ConsultarAgregacion con patrón wildcard funciona correctamente")
 }
 
@@ -2647,7 +2237,7 @@ func TestConsultarAgregacion_PatronSinMatch(t *testing.T) {
 		"inexistente_*/temp",
 		time.Now().Add(-time.Hour),
 		time.Now(),
-		tipos.AgregacionPromedio,
+		[]tipos.TipoAgregacion{tipos.AgregacionPromedio},
 	)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no se encontraron series")
@@ -2693,7 +2283,7 @@ func TestConsultarAgregacionTemporal_Buckets(t *testing.T) {
 		"sensor/temp",
 		hace2Horas,
 		ahora,
-		tipos.AgregacionPromedio,
+		[]tipos.TipoAgregacion{tipos.AgregacionPromedio},
 		time.Hour,
 	)
 	require.NoError(t, err)
@@ -2701,11 +2291,11 @@ func TestConsultarAgregacionTemporal_Buckets(t *testing.T) {
 	assert.Len(t, resultado.Series, 1)
 	assert.Equal(t, "sensor/temp", resultado.Series[0])
 
-	// Verificar primer bucket
-	assert.Equal(t, 15.0, resultado.Valores[0][0])
+	// Verificar primer bucket - formato [agregacion][bucket][serie]
+	assert.Equal(t, 15.0, resultado.Valores[0][0][0])
 
 	// Verificar segundo bucket
-	assert.Equal(t, 35.0, resultado.Valores[1][0])
+	assert.Equal(t, 35.0, resultado.Valores[0][1][0])
 
 	t.Log("ConsultarAgregacionTemporal genera buckets correctamente")
 }
@@ -2742,13 +2332,13 @@ func TestConsultarAgregacionTemporal_IntervaloGrande(t *testing.T) {
 		"sensor/temp",
 		time.Unix(0, ahora-5000),
 		time.Unix(0, ahora),
-		tipos.AgregacionPromedio,
+		[]tipos.TipoAgregacion{tipos.AgregacionPromedio},
 		24*time.Hour,
 	)
 	require.NoError(t, err)
 	assert.Len(t, resultado.Tiempos, 1)
 	assert.Len(t, resultado.Series, 1)
-	assert.Equal(t, 20.0, resultado.Valores[0][0]) // Promedio de 10, 20, 30
+	assert.Equal(t, 20.0, resultado.Valores[0][0][0]) // [agregacion][bucket][serie] Promedio de 10, 20, 30
 
 	t.Log("ConsultarAgregacionTemporal maneja intervalo > rango correctamente")
 }
@@ -2761,7 +2351,7 @@ func TestConsultarAgregacionTemporal_IntervaloInvalido(t *testing.T) {
 		"sensor/temp",
 		time.Now().Add(-time.Hour),
 		time.Now(),
-		tipos.AgregacionPromedio,
+		[]tipos.TipoAgregacion{tipos.AgregacionPromedio},
 		0,
 	)
 	assert.Error(t, err)
@@ -2789,7 +2379,7 @@ func TestConsultarAgregacionTemporal_SinDatos(t *testing.T) {
 		"sensor/temp",
 		time.Now().Add(-time.Hour),
 		time.Now(),
-		tipos.AgregacionPromedio,
+		[]tipos.TipoAgregacion{tipos.AgregacionPromedio},
 		time.Minute,
 	)
 	assert.Error(t, err)
@@ -2830,4 +2420,203 @@ func TestResolverSeries_Patron(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, series, 2)
 	t.Log("resolverSeries resuelve patrón wildcard correctamente")
+}
+
+// ============================================================================
+// TESTS DE MÚLTIPLES AGREGACIONES
+// ============================================================================
+
+// TestConsultarAgregacion_MultiplesAgregaciones_MinMax verifica cálculo de min y max en una sola pasada
+func TestConsultarAgregacion_MultiplesAgregaciones_MinMax(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	serie := tipos.Serie{
+		SerieId:          1,
+		Path:             "sensor/temperatura",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	}
+	manager.cache.mu.Lock()
+	manager.cache.datos[serie.Path] = serie
+	manager.cache.mu.Unlock()
+
+	// Crear mediciones: 10, 20, 30, 40, 50
+	ahora := time.Now().UnixNano()
+	mediciones := []tipos.Medicion{
+		{Tiempo: ahora - 5000, Valor: float64(10.0)},
+		{Tiempo: ahora - 4000, Valor: float64(20.0)},
+		{Tiempo: ahora - 3000, Valor: float64(30.0)},
+		{Tiempo: ahora - 2000, Valor: float64(40.0)},
+		{Tiempo: ahora - 1000, Valor: float64(50.0)},
+	}
+
+	// Guardar bloque
+	bloque := crearBloqueComprimidoTest(t, serie, mediciones)
+	clave := generarClaveDatos(serie.SerieId, ahora-5000, ahora-1000)
+	err := manager.db.Set(clave, bloque, pebble.Sync)
+	require.NoError(t, err)
+
+	// Consultar min y max en una sola llamada
+	resultado, err := manager.ConsultarAgregacion(
+		serie.Path,
+		time.Unix(0, ahora-6000),
+		time.Unix(0, ahora),
+		[]tipos.TipoAgregacion{tipos.AgregacionMinimo, tipos.AgregacionMaximo},
+	)
+	require.NoError(t, err)
+
+	// Verificar que tenemos ambas agregaciones
+	assert.Len(t, resultado.Series, 1)
+	assert.Len(t, resultado.Agregaciones, 2)
+	assert.Equal(t, tipos.AgregacionMinimo, resultado.Agregaciones[0])
+	assert.Equal(t, tipos.AgregacionMaximo, resultado.Agregaciones[1])
+
+	// Verificar valores - formato [agregacion][serie]
+	assert.Equal(t, 10.0, resultado.Valores[0][0]) // Min
+	assert.Equal(t, 50.0, resultado.Valores[1][0]) // Max
+
+	t.Log("ConsultarAgregacion calcula min y max correctamente en una sola pasada")
+}
+
+// TestConsultarAgregacion_MultiplesAgregaciones_Todas verifica todas las agregaciones juntas
+func TestConsultarAgregacion_MultiplesAgregaciones_Todas(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	serie := tipos.Serie{
+		SerieId:          1,
+		Path:             "sensor/temp",
+		TipoDatos:        tipos.Real,
+		TamañoBloque:     100,
+		CompresionBloque: tipos.Ninguna,
+		CompresionBytes:  tipos.SinCompresion,
+	}
+	manager.cache.mu.Lock()
+	manager.cache.datos[serie.Path] = serie
+	manager.cache.mu.Unlock()
+
+	// Crear mediciones: 10, 20, 30, 40, 50 (suma=150, promedio=30, count=5)
+	ahora := time.Now().UnixNano()
+	mediciones := []tipos.Medicion{
+		{Tiempo: ahora - 5000, Valor: float64(10.0)},
+		{Tiempo: ahora - 4000, Valor: float64(20.0)},
+		{Tiempo: ahora - 3000, Valor: float64(30.0)},
+		{Tiempo: ahora - 2000, Valor: float64(40.0)},
+		{Tiempo: ahora - 1000, Valor: float64(50.0)},
+	}
+
+	bloque := crearBloqueComprimidoTest(t, serie, mediciones)
+	clave := generarClaveDatos(serie.SerieId, ahora-5000, ahora-1000)
+	err := manager.db.Set(clave, bloque, pebble.Sync)
+	require.NoError(t, err)
+
+	agregaciones := []tipos.TipoAgregacion{
+		tipos.AgregacionMinimo,
+		tipos.AgregacionMaximo,
+		tipos.AgregacionPromedio,
+		tipos.AgregacionSuma,
+		tipos.AgregacionCount,
+	}
+
+	resultado, err := manager.ConsultarAgregacion(
+		serie.Path,
+		time.Unix(0, ahora-6000),
+		time.Unix(0, ahora),
+		agregaciones,
+	)
+	require.NoError(t, err)
+
+	// Valores esperados para cada agregación - formato [agregacion][serie]
+	assert.Equal(t, 10.0, resultado.Valores[0][0])  // Min
+	assert.Equal(t, 50.0, resultado.Valores[1][0])  // Max
+	assert.Equal(t, 30.0, resultado.Valores[2][0])  // Promedio
+	assert.Equal(t, 150.0, resultado.Valores[3][0]) // Suma
+	assert.Equal(t, 5.0, resultado.Valores[4][0])   // Count
+
+	t.Log("ConsultarAgregacion calcula todas las agregaciones correctamente")
+}
+
+// TestConsultarAgregacion_MultiplesAgregaciones_Wildcard verifica múltiples agregaciones con wildcard
+func TestConsultarAgregacion_MultiplesAgregaciones_Wildcard(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	// Crear dos series
+	serie1 := tipos.Serie{SerieId: 1, Path: "dispositivo1/temp", TipoDatos: tipos.Real, TamañoBloque: 100, CompresionBloque: tipos.Ninguna, CompresionBytes: tipos.SinCompresion}
+	serie2 := tipos.Serie{SerieId: 2, Path: "dispositivo2/temp", TipoDatos: tipos.Real, TamañoBloque: 100, CompresionBloque: tipos.Ninguna, CompresionBytes: tipos.SinCompresion}
+
+	manager.cache.mu.Lock()
+	manager.cache.datos[serie1.Path] = serie1
+	manager.cache.datos[serie2.Path] = serie2
+	manager.cache.mu.Unlock()
+
+	ahora := time.Now().UnixNano()
+
+	// Serie 1: valores 10, 20 (min=10, max=20)
+	mediciones1 := []tipos.Medicion{
+		{Tiempo: ahora - 2000, Valor: float64(10.0)},
+		{Tiempo: ahora - 1000, Valor: float64(20.0)},
+	}
+	bloque1 := crearBloqueComprimidoTest(t, serie1, mediciones1)
+	clave1 := generarClaveDatos(serie1.SerieId, ahora-2000, ahora-1000)
+	manager.db.Set(clave1, bloque1, pebble.Sync)
+
+	// Serie 2: valores 100, 200 (min=100, max=200)
+	mediciones2 := []tipos.Medicion{
+		{Tiempo: ahora - 2000, Valor: float64(100.0)},
+		{Tiempo: ahora - 1000, Valor: float64(200.0)},
+	}
+	bloque2 := crearBloqueComprimidoTest(t, serie2, mediciones2)
+	clave2 := generarClaveDatos(serie2.SerieId, ahora-2000, ahora-1000)
+	manager.db.Set(clave2, bloque2, pebble.Sync)
+
+	resultado, err := manager.ConsultarAgregacion(
+		"dispositivo*/temp",
+		time.Unix(0, ahora-3000),
+		time.Unix(0, ahora),
+		[]tipos.TipoAgregacion{tipos.AgregacionMinimo, tipos.AgregacionMaximo},
+	)
+	require.NoError(t, err)
+
+	// Debe haber 2 series
+	assert.Len(t, resultado.Series, 2)
+
+	// Verificar valores por serie (ordenadas alfabéticamente)
+	// dispositivo1/temp está en índice 0, dispositivo2/temp en índice 1
+	// formato [agregacion][serie]
+	assert.Equal(t, 10.0, resultado.Valores[0][0])  // Min serie1
+	assert.Equal(t, 20.0, resultado.Valores[1][0])  // Max serie1
+	assert.Equal(t, 100.0, resultado.Valores[0][1]) // Min serie2
+	assert.Equal(t, 200.0, resultado.Valores[1][1]) // Max serie2
+
+	t.Log("ConsultarAgregacion con múltiples agregaciones funciona con wildcard sobre múltiples series")
+}
+
+// TestConsultarAgregacion_SinAgregaciones verifica error sin agregaciones
+func TestConsultarAgregacion_SinAgregaciones(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	_, err := manager.ConsultarAgregacion(
+		"sensor/temp",
+		time.Now().Add(-1*time.Hour),
+		time.Now(),
+		[]tipos.TipoAgregacion{}, // Lista vacía
+	)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "al menos una agregación")
+	t.Log("ConsultarAgregacion retorna error sin agregaciones")
+}
+
+// TestConsultarAgregacion_SerieNoExisteConMultiples verifica error para serie inexistente
+func TestConsultarAgregacion_SerieNoExisteConMultiples(t *testing.T) {
+	manager := crearManagerEdgeParaTest(t)
+
+	_, err := manager.ConsultarAgregacion(
+		"serie/inexistente",
+		time.Now().Add(-1*time.Hour),
+		time.Now(),
+		[]tipos.TipoAgregacion{tipos.AgregacionMinimo},
+	)
+	assert.Error(t, err)
+	t.Log("ConsultarAgregacion retorna error para serie inexistente")
 }

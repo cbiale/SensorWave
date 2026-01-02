@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,11 +28,15 @@ const (
 type TipoAgregacion = tipos.TipoAgregacion
 
 const (
-	AgregacionPromedio = tipos.AgregacionPromedio
-	AgregacionMaximo   = tipos.AgregacionMaximo
-	AgregacionMinimo   = tipos.AgregacionMinimo
-	AgregacionSuma     = tipos.AgregacionSuma
-	AgregacionCount    = tipos.AgregacionCount
+	AgregacionPromedio  = tipos.AgregacionPromedio
+	AgregacionMaximo    = tipos.AgregacionMaximo
+	AgregacionMinimo    = tipos.AgregacionMinimo
+	AgregacionSuma      = tipos.AgregacionSuma
+	AgregacionCount     = tipos.AgregacionCount
+	AgregacionFirst     = tipos.AgregacionFirst
+	AgregacionLast      = tipos.AgregacionLast
+	AgregacionFirstTime = tipos.AgregacionFirstTime
+	AgregacionLastTime  = tipos.AgregacionLastTime
 )
 
 type TipoLogica string
@@ -43,16 +46,35 @@ const (
 	LogicaOR  TipoLogica = "OR"
 )
 
+// Condicion define una condición para evaluar reglas.
+// La condición usa las funciones de consulta del sistema (ConsultarUltimoPunto, ConsultarAgregacion)
+// para obtener datos, lo que unifica la lógica de obtención de datos entre consultas y reglas.
 type Condicion struct {
-	Serie       string
-	SeriesGrupo []string
-	PathPattern string            // Patrón de path: "dispositivo_001/*"
-	TagsFilter  map[string]string // Filtro por tags: {"ubicacion": "sala1"}
-	Agregacion  TipoAgregacion
-	FiltroValor interface{} // Filtro pre-agregación (nil = sin filtro, solo soportado con AgregacionCount)
-	Operador    TipoOperador
-	Valor       interface{} // Valor umbral para comparación (soporta bool, int64, float64, string)
-	VentanaT    time.Duration
+	// Path especifica la serie o patrón de series a evaluar.
+	// Puede ser un path exacto ("sensor_01/temp") o un patrón con wildcards ("sensor_*/temp", "*/temp").
+	Path string
+
+	// VentanaT define la ventana temporal relativa hacia atrás desde el momento de evaluación.
+	// Por ejemplo, 5*time.Minute evalúa los datos de los últimos 5 minutos.
+	VentanaT time.Duration
+
+	// Agregacion especifica el tipo de agregación a aplicar sobre los datos.
+	// Si está vacía (""), se usa el último valor (equivalente a "last").
+	// Valores soportados: promedio, maximo, minimo, suma, count, first, last, first_time, last_time
+	Agregacion TipoAgregacion
+
+	// Operador de comparación para evaluar la condición.
+	// Valores: >=, <=, ==, !=, >, <
+	Operador TipoOperador
+
+	// Valor umbral para la comparación.
+	// Tipos soportados: bool, int64, float64, string
+	Valor interface{}
+
+	// AgregarSeries controla cómo se evalúan múltiples series (cuando Path es un patrón wildcard):
+	//   - false (default): Modo "any" - la condición es verdadera si ALGUNA serie cumple
+	//   - true: Modo "all" - primero agrega los valores de todas las series, luego evalúa
+	AgregarSeries bool
 }
 
 type Accion struct {
@@ -86,7 +108,6 @@ type MotorReglas struct {
 	maxDatosCache  int
 	tiempoLimpieza time.Duration
 	mu             sync.RWMutex
-	logger         *log.Logger
 	manager        *ManagerEdge // Referencia al manager padre (para acceso a datos)
 	db             *pebble.DB   // Conexión a PebbleDB para persistencia de reglas
 }
@@ -99,7 +120,6 @@ func nuevoMotorReglasIntegrado(manager *ManagerEdge, db *pebble.DB) *MotorReglas
 		habilitado:     true,
 		maxDatosCache:  1000,
 		tiempoLimpieza: 5 * time.Minute,
-		logger:         log.New(log.Writer(), "[MotorReglas] ", log.LstdFlags|log.Lshortfile),
 		manager:        manager,
 		db:             db,
 	}
@@ -110,19 +130,19 @@ func nuevoMotorReglasIntegrado(manager *ManagerEdge, db *pebble.DB) *MotorReglas
 
 func (mr *MotorReglas) registrarEjecutoresPorDefecto() {
 	mr.ejecutores["log"] = func(accion Accion, regla *Regla, valores map[string]interface{}) error {
-		mr.logger.Printf("Regla '%s' activada - Acción: %s, Destino: %s, Valores: %v",
+		log.Printf("Regla '%s' activada - Acción: %s, Destino: %s, Valores: %v",
 			regla.ID, accion.Tipo, accion.Destino, valores)
 		return nil
 	}
 
 	mr.ejecutores["enviar_alerta"] = func(accion Accion, regla *Regla, valores map[string]interface{}) error {
-		mr.logger.Printf("ALERTA: Regla '%s' - %s. Valores: %v",
+		log.Printf("ALERTA: Regla '%s' - %s. Valores: %v",
 			regla.ID, accion.Destino, valores)
 		return nil
 	}
 
 	mr.ejecutores["activar_actuador"] = func(accion Accion, regla *Regla, valores map[string]interface{}) error {
-		mr.logger.Printf("ACTUADOR: Activando %s por regla '%s'. Valores: %v",
+		log.Printf("ACTUADOR: Activando %s por regla '%s'. Valores: %v",
 			accion.Destino, regla.ID, valores)
 		return nil
 	}
@@ -163,7 +183,7 @@ func (mr *MotorReglas) evaluarReglas(timestamp time.Time) error {
 
 		if mr.evaluarCondicionesRegla(regla, timestamp) {
 			if err := mr.ejecutarAcciones(regla, timestamp); err != nil {
-				mr.logger.Printf("Error ejecutando acciones de regla '%s': %v", regla.ID, err)
+				log.Printf("Error ejecutando acciones de regla '%s': %v", regla.ID, err)
 			}
 		}
 
@@ -203,6 +223,8 @@ func (mr *MotorReglas) evaluarCondicionesRegla(regla *Regla, timestamp time.Time
 
 // CalcularAgregacionSimple calcula una agregación sobre un slice de valores.
 // Función pública para ser usada por consultas y reglas.
+// NOTA: Para agregaciones First/Last, se asume que los valores están ordenados por tiempo ascendente.
+// Para FirstTime/LastTime, usar CalcularAgregacionConTiempos.
 func CalcularAgregacionSimple(valores []float64, agregacion TipoAgregacion) (float64, error) {
 	if len(valores) == 0 {
 		return 0, fmt.Errorf("no hay valores para agregar")
@@ -244,206 +266,132 @@ func CalcularAgregacionSimple(valores []float64, agregacion TipoAgregacion) (flo
 	case AgregacionCount:
 		return float64(len(valores)), nil
 
+	case AgregacionFirst:
+		// Primer valor (asumiendo orden cronológico ascendente)
+		return valores[0], nil
+
+	case AgregacionLast:
+		// Último valor (asumiendo orden cronológico ascendente)
+		return valores[len(valores)-1], nil
+
+	case AgregacionFirstTime, AgregacionLastTime:
+		return 0, fmt.Errorf("agregación %s requiere timestamps, usar CalcularAgregacionConTiempos", agregacion)
+
 	default:
 		return 0, fmt.Errorf("tipo de agregación no soportado: %s", agregacion)
+	}
+}
+
+// CalcularAgregacionConTiempos calcula una agregación sobre valores con sus timestamps asociados.
+// Necesario para agregaciones FirstTime/LastTime que retornan timestamps.
+// Los valores y tiempos deben tener la misma longitud y estar en el mismo orden.
+func CalcularAgregacionConTiempos(valores []float64, tiempos []int64, agregacion TipoAgregacion) (float64, error) {
+	if len(valores) == 0 {
+		return 0, fmt.Errorf("no hay valores para agregar")
+	}
+	if len(valores) != len(tiempos) {
+		return 0, fmt.Errorf("valores y tiempos deben tener la misma longitud")
+	}
+
+	switch agregacion {
+	case AgregacionFirstTime:
+		// Encontrar el timestamp más antiguo (mínimo)
+		minIdx := 0
+		for i := 1; i < len(tiempos); i++ {
+			if tiempos[i] < tiempos[minIdx] {
+				minIdx = i
+			}
+		}
+		return float64(tiempos[minIdx]), nil
+
+	case AgregacionLastTime:
+		// Encontrar el timestamp más reciente (máximo)
+		maxIdx := 0
+		for i := 1; i < len(tiempos); i++ {
+			if tiempos[i] > tiempos[maxIdx] {
+				maxIdx = i
+			}
+		}
+		return float64(tiempos[maxIdx]), nil
+
+	case AgregacionFirst:
+		// Primer valor por timestamp (el más antiguo)
+		minIdx := 0
+		for i := 1; i < len(tiempos); i++ {
+			if tiempos[i] < tiempos[minIdx] {
+				minIdx = i
+			}
+		}
+		return valores[minIdx], nil
+
+	case AgregacionLast:
+		// Último valor por timestamp (el más reciente)
+		maxIdx := 0
+		for i := 1; i < len(tiempos); i++ {
+			if tiempos[i] > tiempos[maxIdx] {
+				maxIdx = i
+			}
+		}
+		return valores[maxIdx], nil
+
+	default:
+		// Para otras agregaciones, delegar a CalcularAgregacionSimple
+		return CalcularAgregacionSimple(valores, agregacion)
 	}
 }
 
 func (mr *MotorReglas) evaluarCondicion(condicion *Condicion, timestamp time.Time) bool {
 	tiempoInicio := timestamp.Add(-condicion.VentanaT)
 
-	var valorEvaluacion interface{}
-	var err error
+	// Determinar si es agregación que requiere último valor o agregación completa
+	agregacionVacia := condicion.Agregacion == "" || condicion.Agregacion == AgregacionLast
 
-	if condicion.PathPattern != "" || len(condicion.TagsFilter) > 0 {
-		seriesResueltas := mr.resolverSeriesPorCondicion(condicion)
-		if len(seriesResueltas) == 0 {
+	if agregacionVacia {
+		// Sin agregación (o "last") = obtener último valor en ventana
+		resultado, err := mr.manager.ConsultarUltimoPunto(condicion.Path, &tiempoInicio, &timestamp)
+		if err != nil || len(resultado.Valores) == 0 {
 			return false
 		}
-		// Para agregaciones, siempre retorna float64
-		valorEvaluacion, err = mr.calcularAgregacion(seriesResueltas, condicion.Agregacion, tiempoInicio, timestamp, condicion.FiltroValor)
-	} else if len(condicion.SeriesGrupo) > 0 {
-		// Para agregaciones, siempre retorna float64
-		valorEvaluacion, err = mr.calcularAgregacion(condicion.SeriesGrupo, condicion.Agregacion, tiempoInicio, timestamp, condicion.FiltroValor)
-	} else {
-		// Para serie individual, puede retornar cualquier tipo
-		valorEvaluacion, err = mr.obtenerValorSerie(condicion.Serie, tiempoInicio, timestamp)
-	}
 
-	if err != nil {
+		if condicion.AgregarSeries {
+			// Modo "all": usar el primer valor encontrado (no tiene mucho sentido sin agregación)
+			return mr.aplicarOperador(resultado.Valores[0], condicion.Operador, condicion.Valor)
+		}
+
+		// Modo "any": si alguna serie cumple, retornar true
+		for _, valor := range resultado.Valores {
+			if mr.aplicarOperador(valor, condicion.Operador, condicion.Valor) {
+				return true
+			}
+		}
 		return false
 	}
 
-	return mr.aplicarOperador(valorEvaluacion, condicion.Operador, condicion.Valor)
-}
-
-// convertirAFloat64 convierte un valor interface{} a float64 para agregaciones numéricas
-func convertirAFloat64(valor interface{}) (float64, error) {
-	switch v := valor.(type) {
-	case float64:
-		return v, nil
-	case int64:
-		return float64(v), nil
-	default:
-		return 0, fmt.Errorf("tipo %T no se puede convertir a float64", valor)
-	}
-}
-
-// coincideFiltro verifica si un valor coincide con el filtro
-func coincideFiltro(valor interface{}, filtro interface{}) bool {
-	// Mismo tipo: comparar directamente
-	switch v := valor.(type) {
-	case bool:
-		f, ok := filtro.(bool)
-		if !ok {
-			return false
-		}
-		return v == f
-
-	case string:
-		f, ok := filtro.(string)
-		if !ok {
-			return false
-		}
-		// Case-insensitive para strings
-		return strings.EqualFold(v, f)
-
-	case int64:
-		// Filtro puede ser int64 o float64
-		switch f := filtro.(type) {
-		case int64:
-			return v == f
-		case float64:
-			return float64(v) == f
-		default:
-			return false
-		}
-
-	case float64:
-		// Filtro puede ser int64 o float64
-		const epsilon = 1e-9
-		switch f := filtro.(type) {
-		case int64:
-			return math.Abs(v-float64(f)) < epsilon
-		case float64:
-			return math.Abs(v-f) < epsilon
-		default:
-			return false
-		}
-
-	default:
+	// Con agregación: usar ConsultarAgregacion
+	resultado, err := mr.manager.ConsultarAgregacion(condicion.Path, tiempoInicio, timestamp, []tipos.TipoAgregacion{condicion.Agregacion})
+	if err != nil || len(resultado.Valores) == 0 || len(resultado.Valores[0]) == 0 {
 		return false
 	}
-}
 
-func (mr *MotorReglas) calcularAgregacion(series []string, agregacion TipoAgregacion, tiempoInicio, tiempoFin time.Time, filtroValor interface{}) (float64, error) {
-	var valoresPorSerie []float64
+	// resultado.Valores[0] contiene los valores de la primera (y única) agregación
+	valoresAgregacion := resultado.Valores[0]
 
-	// Calcular agregación POR CADA serie
-	for _, serie := range series {
-		datosValidos := mr.obtenerDatosEnVentana(serie, tiempoInicio, tiempoFin)
-		if len(datosValidos) == 0 {
-			continue
-		}
-
-		// Extraer valores de los datos temporales y convertir a float64
-		valores := make([]float64, 0, len(datosValidos))
-		for _, dato := range datosValidos {
-			// Aplicar filtro si existe
-			if filtroValor != nil {
-				if !coincideFiltro(dato.Valor, filtroValor) {
-					continue // Saltar este valor
-				}
-			}
-
-			// Convertir a float64 para agregación numérica
-			valorFloat, err := convertirAFloat64(dato.Valor)
-			if err != nil {
-				// Si no se puede convertir (ej: string, boolean) y estamos haciendo count, usar 1.0
-				if agregacion == AgregacionCount {
-					valorFloat = 1.0
-				} else {
-					continue // Saltar valores no numéricos para otras agregaciones
-				}
-			}
-			valores = append(valores, valorFloat)
-		}
-
-		if len(valores) == 0 {
-			continue
-		}
-
-		// Usar helper para calcular agregación de esta serie
-		valorSerie, err := CalcularAgregacionSimple(valores, agregacion)
+	if condicion.AgregarSeries {
+		// Modo "all": agregar todos los valores de las series
+		valorFinal, err := CalcularAgregacionSimple(valoresAgregacion, condicion.Agregacion)
 		if err != nil {
-			continue
+			return false
 		}
-
-		valoresPorSerie = append(valoresPorSerie, valorSerie)
+		return mr.aplicarOperador(valorFinal, condicion.Operador, condicion.Valor)
 	}
 
-	if len(valoresPorSerie) == 0 {
-		return 0, fmt.Errorf("no hay datos disponibles para la agregación")
-	}
-
-	// Usar helper nuevamente para agregar entre series
-	return CalcularAgregacionSimple(valoresPorSerie, agregacion)
-}
-
-func (mr *MotorReglas) obtenerValorSerie(serie string, tiempoInicio, tiempoFin time.Time) (interface{}, error) {
-	datosValidos := mr.obtenerDatosEnVentana(serie, tiempoInicio, tiempoFin)
-
-	if len(datosValidos) == 0 {
-		return nil, fmt.Errorf("no hay datos disponibles para la serie %s", serie)
-	}
-
-	return datosValidos[len(datosValidos)-1].Valor, nil
-}
-
-func (mr *MotorReglas) obtenerDatosEnVentana(serie string, tiempoInicio, tiempoFin time.Time) []DatoTemporal {
-	var datosValidos []DatoTemporal
-
-	// Primero verificar cache local (más rápido y tiene datos recientes)
-	datos, existsInCache := mr.datos[serie]
-	if existsInCache {
-		for _, dato := range datos {
-			if dato.Timestamp.After(tiempoInicio) && dato.Timestamp.Before(tiempoFin) || dato.Timestamp.Equal(tiempoFin) {
-				datosValidos = append(datosValidos, dato)
-			}
-		}
-
-		// Si encontramos datos en cache, retornarlos
-		if len(datosValidos) > 0 {
-			sort.Slice(datosValidos, func(i, j int) bool {
-				return datosValidos[i].Timestamp.Before(datosValidos[j].Timestamp)
-			})
-			return datosValidos
+	// Modo "any": si alguna serie cumple
+	for _, valor := range valoresAgregacion {
+		if mr.aplicarOperador(valor, condicion.Operador, condicion.Valor) {
+			return true
 		}
 	}
-
-	// Si no hay datos en cache, consultar la base de datos
-	if mr.manager != nil {
-		resultado, err := mr.manager.ConsultarRango(serie, tiempoInicio, tiempoFin)
-		if err == nil {
-			// Convertir ResultadoConsultaRango a DatoTemporal
-			// El resultado tabular puede tener múltiples columnas, extraemos todos los valores
-			for filaIdx, tiempo := range resultado.Tiempos {
-				if filaIdx < len(resultado.Valores) {
-					for _, valor := range resultado.Valores[filaIdx] {
-						if valor != nil {
-							datosValidos = append(datosValidos, DatoTemporal{
-								Timestamp: time.Unix(0, tiempo),
-								Valor:     valor,
-							})
-						}
-					}
-				}
-			}
-			return datosValidos
-		}
-	}
-
-	return nil
+	return false
 }
 
 func (mr *MotorReglas) aplicarOperador(valor1 interface{}, operador TipoOperador, valor2 interface{}) bool {
@@ -458,12 +406,12 @@ func (mr *MotorReglas) aplicarOperador(valor1 interface{}, operador TipoOperador
 			case OperadorDistinto:
 				return v1 != v2
 			default:
-				mr.logger.Printf("Operador %s no soportado para boolean", operador)
+				log.Printf("Operador %s no soportado para boolean", operador)
 				return false
 			}
 		}
 		// Tipos incompatibles
-		mr.logger.Printf("No se puede comparar bool con %T", valor2)
+		log.Printf("No se puede comparar bool con %T", valor2)
 		return false
 	}
 
@@ -479,12 +427,12 @@ func (mr *MotorReglas) aplicarOperador(valor1 interface{}, operador TipoOperador
 			case OperadorDistinto:
 				return v1Lower != v2Lower
 			default:
-				mr.logger.Printf("Operador %s no soportado para string", operador)
+				log.Printf("Operador %s no soportado para string", operador)
 				return false
 			}
 		}
 		// Tipos incompatibles
-		mr.logger.Printf("No se puede comparar string con %T", valor2)
+		log.Printf("No se puede comparar string con %T", valor2)
 		return false
 	}
 
@@ -533,23 +481,27 @@ func (mr *MotorReglas) aplicarOperador(valor1 interface{}, operador TipoOperador
 	}
 
 	// Tipos incompatibles (ej: número vs string)
-	mr.logger.Printf("No se puede comparar %T con %T", valor1, valor2)
+	log.Printf("No se puede comparar %T con %T", valor1, valor2)
 	return false
 }
 
 func (mr *MotorReglas) ejecutarAcciones(regla *Regla, timestamp time.Time) error {
 	valores := make(map[string]interface{})
 
+	// Recolectar valores de las condiciones para pasarlos a las acciones
 	for _, condicion := range regla.Condiciones {
-		if len(condicion.SeriesGrupo) > 0 {
-			for _, serie := range condicion.SeriesGrupo {
-				if valor, err := mr.obtenerValorSerie(serie, timestamp.Add(-condicion.VentanaT), timestamp); err == nil {
-					valores[serie] = valor
-				}
-			}
-		} else {
-			if valor, err := mr.obtenerValorSerie(condicion.Serie, timestamp.Add(-condicion.VentanaT), timestamp); err == nil {
-				valores[condicion.Serie] = valor
+		tiempoInicio := timestamp.Add(-condicion.VentanaT)
+
+		// Usar ConsultarUltimoPunto para obtener los valores actuales
+		resultado, err := mr.manager.ConsultarUltimoPunto(condicion.Path, &tiempoInicio, &timestamp)
+		if err != nil {
+			continue
+		}
+
+		// Agregar todos los valores encontrados al mapa
+		for i, serie := range resultado.Series {
+			if i < len(resultado.Valores) {
+				valores[serie] = resultado.Valores[i]
 			}
 		}
 	}
@@ -557,7 +509,7 @@ func (mr *MotorReglas) ejecutarAcciones(regla *Regla, timestamp time.Time) error
 	for _, accion := range regla.Acciones {
 		ejecutor, exists := mr.ejecutores[accion.Tipo]
 		if !exists {
-			mr.logger.Printf("Ejecutor no encontrado para tipo de acción: %s", accion.Tipo)
+			log.Printf("Ejecutor no encontrado para tipo de acción: %s", accion.Tipo)
 			continue
 		}
 
@@ -581,7 +533,7 @@ func (mr *MotorReglas) RegistrarEjecutor(tipoAccion string, ejecutor EjecutorAcc
 	defer mr.mu.Unlock()
 
 	mr.ejecutores[tipoAccion] = ejecutor
-	mr.logger.Printf("Ejecutor registrado para tipo de acción: %s", tipoAccion)
+	log.Printf("Ejecutor registrado para tipo de acción: %s", tipoAccion)
 	return nil
 }
 
@@ -594,7 +546,7 @@ func (mr *MotorReglas) Habilitar(habilitado bool) {
 	if habilitado {
 		estado = "habilitado"
 	}
-	mr.logger.Printf("Motor de reglas %s", estado)
+	log.Printf("Motor de reglas %s", estado)
 }
 
 func (mr *MotorReglas) LimpiarDatosAntiguos(tiempoRetencion time.Duration) {
@@ -620,7 +572,7 @@ func (mr *MotorReglas) LimpiarDatosAntiguos(tiempoRetencion time.Duration) {
 		}
 	}
 
-	mr.logger.Printf("Limpieza completada: %d datos eliminados", datosEliminados)
+	log.Printf("Limpieza completada: %d datos eliminados", datosEliminados)
 }
 
 func (mr *MotorReglas) validarRegla(regla *Regla) error {
@@ -656,35 +608,17 @@ func (mr *MotorReglas) validarRegla(regla *Regla) error {
 }
 
 func (mr *MotorReglas) validarCondicion(condicion *Condicion) error {
-	tieneSerieIndividual := condicion.Serie != ""
-	tieneGrupo := len(condicion.SeriesGrupo) > 0
-	tienePathPattern := condicion.PathPattern != ""
-	tieneTagsFilter := len(condicion.TagsFilter) > 0
-
-	if !tieneSerieIndividual && !tieneGrupo && !tienePathPattern && !tieneTagsFilter {
-		return fmt.Errorf("debe especificar una serie, grupo de series, PathPattern o TagsFilter")
+	// VALIDACIÓN 1: Path no puede estar vacío
+	if condicion.Path == "" {
+		return fmt.Errorf("Path de condición no puede estar vacío")
 	}
 
-	if tieneSerieIndividual && tieneGrupo {
-		return fmt.Errorf("no se puede especificar tanto serie individual como grupo de series")
-	}
-
-	if (tienePathPattern || tieneTagsFilter) && (tieneSerieIndividual || tieneGrupo) {
-		return fmt.Errorf("PathPattern/TagsFilter no se puede combinar con Serie/SeriesGrupo")
-	}
-
-	if len(condicion.SeriesGrupo) > 0 && condicion.Agregacion == "" {
-		return fmt.Errorf("debe especificar tipo de agregación para grupo de series")
-	}
-
-	if (tienePathPattern || tieneTagsFilter) && condicion.Agregacion == "" {
-		return fmt.Errorf("debe especificar tipo de agregación para PathPattern/TagsFilter")
-	}
-
+	// VALIDACIÓN 2: Ventana temporal debe ser positiva
 	if condicion.VentanaT <= 0 {
 		return fmt.Errorf("ventana temporal debe ser mayor a cero")
 	}
 
+	// VALIDACIÓN 3: Operador válido
 	operadoresValidos := []TipoOperador{OperadorMayorIgual, OperadorMenorIgual, OperadorIgual, OperadorDistinto, OperadorMayor, OperadorMenor}
 	operadorValido := false
 	for _, op := range operadoresValidos {
@@ -697,8 +631,36 @@ func (mr *MotorReglas) validarCondicion(condicion *Condicion) error {
 		return fmt.Errorf("operador inválido: %s", condicion.Operador)
 	}
 
-	if len(condicion.SeriesGrupo) > 0 {
-		agregacionesValidas := []TipoAgregacion{AgregacionPromedio, AgregacionMaximo, AgregacionMinimo, AgregacionSuma, AgregacionCount}
+	// VALIDACIÓN 4: Valor no puede ser nil
+	if condicion.Valor == nil {
+		return fmt.Errorf("valor de condición no puede ser nil")
+	}
+
+	// VALIDACIÓN 5: Solo tipos de valor soportados
+	switch condicion.Valor.(type) {
+	case bool, int64, float64, string:
+		// OK
+	default:
+		return fmt.Errorf("tipo de valor no soportado: %T (use bool, int64, float64 o string)", condicion.Valor)
+	}
+
+	// VALIDACIÓN 6: Operadores restringidos para bool/string
+	switch condicion.Valor.(type) {
+	case bool, string:
+		if condicion.Operador != OperadorIgual && condicion.Operador != OperadorDistinto {
+			return fmt.Errorf("tipo %T solo soporta operadores == y != (recibido: %s)",
+				condicion.Valor, condicion.Operador)
+		}
+	}
+
+	// VALIDACIÓN 7: Agregación válida (si se especifica)
+	if condicion.Agregacion != "" {
+		agregacionesValidas := []TipoAgregacion{
+			AgregacionPromedio, AgregacionMaximo, AgregacionMinimo,
+			AgregacionSuma, AgregacionCount,
+			AgregacionFirst, AgregacionLast,
+			AgregacionFirstTime, AgregacionLastTime,
+		}
 		agregacionValida := false
 		for _, agg := range agregacionesValidas {
 			if condicion.Agregacion == agg {
@@ -711,47 +673,8 @@ func (mr *MotorReglas) validarCondicion(condicion *Condicion) error {
 		}
 	}
 
-	// NUEVA VALIDACIÓN 1: Valor no puede ser nil
-	if condicion.Valor == nil {
-		return fmt.Errorf("valor de condición no puede ser nil")
-	}
-
-	// NUEVA VALIDACIÓN 2: Solo tipos soportados
-	switch condicion.Valor.(type) {
-	case bool, int64, float64, string:
-		// OK
-	default:
-		return fmt.Errorf("tipo de valor no soportado: %T (use bool, int64, float64 o string)", condicion.Valor)
-	}
-
-	// NUEVA VALIDACIÓN 3: Operadores restringidos para bool/string
-	switch condicion.Valor.(type) {
-	case bool, string:
-		if condicion.Operador != OperadorIgual && condicion.Operador != OperadorDistinto {
-			return fmt.Errorf("tipo %T solo soporta operadores == y != (recibido: %s)",
-				condicion.Valor, condicion.Operador)
-		}
-	}
-
-	// NUEVA VALIDACIÓN 4: FiltroValor
-	if condicion.FiltroValor != nil {
-		// Solo permitir filtro con AgregacionCount (por ahora)
-		if condicion.Agregacion != AgregacionCount {
-			return fmt.Errorf("FiltroValor solo está soportado con agregación 'count' (recibido: %s)", condicion.Agregacion)
-		}
-
-		// Validar tipo de FiltroValor
-		switch condicion.FiltroValor.(type) {
-		case bool, int64, float64, string:
-			// OK
-		default:
-			return fmt.Errorf("FiltroValor tipo no soportado: %T (use bool, int64, float64 o string)", condicion.FiltroValor)
-		}
-	}
-
-	// NUEVA VALIDACIÓN 5: Agregaciones incompatibles con Text/Boolean
+	// VALIDACIÓN 8: Verificar compatibilidad de tipos con agregación
 	if condicion.Agregacion != "" && condicion.Agregacion != AgregacionCount {
-		// Verificar si alguna serie del grupo es Text o Boolean
 		if err := mr.validarAgregacionCompatible(condicion); err != nil {
 			return err
 		}
@@ -760,42 +683,34 @@ func (mr *MotorReglas) validarCondicion(condicion *Condicion) error {
 	return nil
 }
 
-// validarAgregacionCompatible verifica que la agregación sea compatible con los tipos de las series
+// validarAgregacionCompatible verifica que la agregación sea compatible con los tipos de las series.
+// Usa el Path para resolver las series (puede incluir wildcards).
 func (mr *MotorReglas) validarAgregacionCompatible(condicion *Condicion) error {
 	if mr.manager == nil {
 		return nil // No podemos validar sin manager
 	}
 
-	// Lista de series a validar
-	var seriesToValidate []string
-
-	if condicion.Serie != "" {
-		seriesToValidate = append(seriesToValidate, condicion.Serie)
-	}
-	if len(condicion.SeriesGrupo) > 0 {
-		seriesToValidate = append(seriesToValidate, condicion.SeriesGrupo...)
+	// Resolver series por Path (puede ser exacto o patrón wildcard)
+	series, err := mr.manager.ListarSeriesPorPath(condicion.Path)
+	if err != nil {
+		// Si no se pueden resolver las series, no validar estrictamente
+		return nil
 	}
 
-	// Validar cada serie (no-estricto: solo si existe)
+	// Validar cada serie
 	tiposEncontrados := make(map[tipos.TipoDatos]bool)
 
-	for _, path := range seriesToValidate {
-		serie, err := mr.manager.ObtenerSeries(path)
-		if err != nil {
-			// Serie no existe todavía - skip (validación no-estricta)
-			continue
-		}
-
+	for _, serie := range series {
 		tiposEncontrados[serie.TipoDatos] = true
 
-		// Text y Boolean NO permiten agregaciones (excepto count)
+		// Text y Boolean NO permiten agregaciones numéricas (excepto count)
 		if serie.TipoDatos == tipos.Text || serie.TipoDatos == tipos.Boolean {
 			return fmt.Errorf("agregación '%s' no soportada para serie '%s' de tipo %s (solo 'count' es válido)",
-				condicion.Agregacion, path, serie.TipoDatos)
+				condicion.Agregacion, serie.Path, serie.TipoDatos)
 		}
 	}
 
-	// VALIDACIÓN ADICIONAL: Grupos heterogéneos no permiten agregaciones
+	// Grupos heterogéneos no permiten agregaciones numéricas
 	if len(tiposEncontrados) > 1 {
 		return fmt.Errorf("no se puede agregar series de tipos diferentes (encontrados: %v)",
 			getTiposKeys(tiposEncontrados))
@@ -857,37 +772,6 @@ func (mr *MotorReglas) ObtenerRegla(id string) (*Regla, error) {
 	}
 
 	return regla, nil
-}
-
-// resolverSeriesPorCondicion resuelve las series que coinciden con PathPattern o TagsFilter
-func (mr *MotorReglas) resolverSeriesPorCondicion(condicion *Condicion) []string {
-	var seriesResueltas []string
-
-	if mr.manager == nil {
-		return seriesResueltas
-	}
-
-	// Si hay PathPattern, usar ese filtro
-	if condicion.PathPattern != "" {
-		series, err := mr.manager.ListarSeriesPorPath(condicion.PathPattern)
-		if err == nil {
-			for _, serie := range series {
-				seriesResueltas = append(seriesResueltas, serie.Path)
-			}
-		}
-	}
-
-	// Si hay TagsFilter, filtrar por tags
-	if len(condicion.TagsFilter) > 0 {
-		series, err := mr.manager.ListarSeriesPorTags(condicion.TagsFilter)
-		if err == nil {
-			for _, serie := range series {
-				seriesResueltas = append(seriesResueltas, serie.Path)
-			}
-		}
-	}
-
-	return seriesResueltas
 }
 
 // AgregarReglaEnMemoria agrega una regla al motor sin persistencia
@@ -994,7 +878,7 @@ func (mr *MotorReglas) AgregarRegla(regla *Regla) error {
 		return err
 	}
 
-	mr.logger.Printf("Regla '%s' agregada exitosamente", regla.ID)
+	log.Printf("Regla '%s' agregada exitosamente", regla.ID)
 	return nil
 }
 
@@ -1011,7 +895,7 @@ func (mr *MotorReglas) EliminarRegla(id string) error {
 		return err
 	}
 
-	mr.logger.Printf("Regla '%s' eliminada", id)
+	log.Printf("Regla '%s' eliminada", id)
 	return nil
 }
 
@@ -1041,6 +925,6 @@ func (mr *MotorReglas) ActualizarRegla(regla *Regla) error {
 		return err
 	}
 
-	mr.logger.Printf("Regla '%s' actualizada", regla.ID)
+	log.Printf("Regla '%s' actualizada", regla.ID)
 	return nil
 }

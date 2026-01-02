@@ -167,8 +167,19 @@ func (me *ManagerEdge) handleConsultaUltimo(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Convertir tiempos opcionales a *time.Time
+	var tiempoInicio, tiempoFin *time.Time
+	if solicitud.TiempoInicio != nil {
+		t := time.Unix(0, *solicitud.TiempoInicio)
+		tiempoInicio = &t
+	}
+	if solicitud.TiempoFin != nil {
+		t := time.Unix(0, *solicitud.TiempoFin)
+		tiempoFin = &t
+	}
+
 	// Ejecutar consulta
-	resultado, err := me.ConsultarUltimoPunto(solicitud.Serie)
+	resultado, err := me.ConsultarUltimoPunto(solicitud.Serie, tiempoInicio, tiempoFin)
 
 	// Construir respuesta
 	respuesta := tipos.RespuestaConsultaPunto{
@@ -227,7 +238,7 @@ func (me *ManagerEdge) handleConsultaAgregacion(w http.ResponseWriter, r *http.R
 	tiempoInicio := time.Unix(0, solicitud.TiempoInicio)
 	tiempoFin := time.Unix(0, solicitud.TiempoFin)
 
-	resultado, err := me.ConsultarAgregacion(solicitud.Serie, tiempoInicio, tiempoFin, solicitud.Agregacion)
+	resultado, err := me.ConsultarAgregacion(solicitud.Serie, tiempoInicio, tiempoFin, solicitud.Agregaciones)
 
 	// Construir respuesta
 	respuesta := tipos.RespuestaConsultaAgregacion{
@@ -268,7 +279,7 @@ func (me *ManagerEdge) handleConsultaAgregacionTemporal(w http.ResponseWriter, r
 	tiempoFin := time.Unix(0, solicitud.TiempoFin)
 	intervalo := time.Duration(solicitud.Intervalo)
 
-	resultado, err := me.ConsultarAgregacionTemporal(solicitud.Serie, tiempoInicio, tiempoFin, solicitud.Agregacion, intervalo)
+	resultado, err := me.ConsultarAgregacionTemporal(solicitud.Serie, tiempoInicio, tiempoFin, solicitud.Agregaciones, intervalo)
 
 	// Construir respuesta
 	respuesta := tipos.RespuestaConsultaAgregacionTemporal{

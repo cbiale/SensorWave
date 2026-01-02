@@ -190,9 +190,13 @@ func (me *ManagerEdge) consultarRangoSerie(serie tipos.Serie, tiempoInicio, tiem
 //   - Path exacto: "sensor_01/temperatura"
 //   - Patrón con wildcard: "sensor_*/temperatura" o "*/temperatura"
 //
+// Los parámetros tiempoInicio y tiempoFin son opcionales:
+//   - Si ambos son nil: retorna el último punto absoluto de cada serie
+//   - Si se especifican: retorna el último punto dentro del rango temporal
+//
 // Retorna el último punto de CADA serie en formato columnar.
 // Las series sin datos son excluidas del resultado.
-func (me *ManagerEdge) ConsultarUltimoPunto(path string) (tipos.ResultadoConsultaPunto, error) {
+func (me *ManagerEdge) ConsultarUltimoPunto(path string, tiempoInicio, tiempoFin *time.Time) (tipos.ResultadoConsultaPunto, error) {
 	// Resolver series (path exacto o patrón wildcard)
 	series, err := me.resolverSeries(path)
 	if err != nil {
@@ -208,7 +212,7 @@ func (me *ManagerEdge) ConsultarUltimoPunto(path string) (tipos.ResultadoConsult
 	var puntos []puntoSerie
 
 	for _, serie := range series {
-		medicion, err := me.consultarUltimoPuntoSerie(serie)
+		medicion, err := me.consultarUltimoPuntoSerie(serie, tiempoInicio, tiempoFin)
 		if err != nil {
 			continue // Ignorar series sin datos
 		}
@@ -244,8 +248,30 @@ func (me *ManagerEdge) ConsultarUltimoPunto(path string) (tipos.ResultadoConsult
 	return resultado, nil
 }
 
-// consultarUltimoPuntoSerie obtiene la última medición de una serie específica
-func (me *ManagerEdge) consultarUltimoPuntoSerie(serie tipos.Serie) (tipos.Medicion, error) {
+// consultarUltimoPuntoSerie obtiene la última medición de una serie específica.
+// Si tiempoInicio y tiempoFin son nil, retorna el último punto absoluto.
+// Si se especifican, retorna el último punto dentro del rango.
+func (me *ManagerEdge) consultarUltimoPuntoSerie(serie tipos.Serie, tiempoInicio, tiempoFin *time.Time) (tipos.Medicion, error) {
+	// Si hay rango temporal, usar ConsultarRango y encontrar el último
+	if tiempoInicio != nil && tiempoFin != nil {
+		resultado, err := me.consultarRangoSerie(serie, *tiempoInicio, *tiempoFin)
+		if err != nil {
+			return tipos.Medicion{}, err
+		}
+		if len(resultado) == 0 {
+			return tipos.Medicion{}, fmt.Errorf("no hay mediciones en el rango para la serie: %s", serie.Path)
+		}
+		// Encontrar la medición más reciente
+		ultimaMedicion := resultado[0]
+		for _, m := range resultado[1:] {
+			if m.Tiempo > ultimaMedicion.Tiempo {
+				ultimaMedicion = m
+			}
+		}
+		return ultimaMedicion, nil
+	}
+
+	// Sin rango: comportamiento original - último punto absoluto
 	// Primero revisar el buffer en memoria
 	if bufferInterface, ok := me.buffers.Load(serie.Path); ok {
 		buffer := bufferInterface.(*SerieBuffer)
@@ -361,83 +387,96 @@ func (me *ManagerEdge) resolverSeries(path string) ([]tipos.Serie, error) {
 	return []tipos.Serie{serie}, nil
 }
 
-// ConsultarAgregacion calcula una agregación sobre una o más series.
+// ConsultarAgregacion calcula una o más agregaciones sobre una o más series.
 // El parámetro path puede ser:
 //   - Path exacto: "sensor_01/temperatura"
 //   - Patrón con wildcard: "sensor_*/temperatura" o "*/temperatura"
 //
-// Retorna un valor agregado por cada serie en formato columnar.
+// Soporta múltiples agregaciones en una sola pasada sobre los datos.
+// Retorna un valor agregado por cada serie y cada agregación.
 // Las series sin datos en el rango son excluidas del resultado.
 func (me *ManagerEdge) ConsultarAgregacion(
 	path string,
 	tiempoInicio, tiempoFin time.Time,
-	agregacion tipos.TipoAgregacion,
+	agregaciones []tipos.TipoAgregacion,
 ) (tipos.ResultadoAgregacion, error) {
-	// Usar ConsultarRango para obtener datos en formato tabular
+	if len(agregaciones) == 0 {
+		return tipos.ResultadoAgregacion{}, fmt.Errorf("debe especificar al menos una agregación")
+	}
+
+	// Usar ConsultarRango para obtener datos en formato tabular (una sola lectura)
 	resultado, err := me.ConsultarRango(path, tiempoInicio, tiempoFin)
 	if err != nil {
 		return tipos.ResultadoAgregacion{}, err
 	}
 
-	// Calcular agregación POR COLUMNA (serie)
-	seriesConDatos := make([]string, 0, len(resultado.Series))
-	valoresFinales := make([]float64, 0, len(resultado.Series))
-
-	for colIdx, nombreSerie := range resultado.Series {
-		var valoresColumna []float64
-
-		for filaIdx := range resultado.Tiempos {
-			if v := resultado.Valores[filaIdx][colIdx]; v != nil {
-				valorFloat, err := convertirAFloat64(v)
-				if err != nil {
-					// Para COUNT, contar cualquier valor como 1
-					if agregacion == tipos.AgregacionCount {
-						valorFloat = 1.0
-					} else {
-						continue // Saltar valores no numéricos para otras agregaciones
-					}
-				}
-				valoresColumna = append(valoresColumna, valorFloat)
-			}
-		}
-
-		if len(valoresColumna) > 0 {
-			valor, err := CalcularAgregacionSimple(valoresColumna, agregacion)
-			if err == nil {
-				seriesConDatos = append(seriesConDatos, nombreSerie)
-				valoresFinales = append(valoresFinales, valor)
-			}
-		}
-	}
-
-	if len(seriesConDatos) == 0 {
+	if len(resultado.Series) == 0 || len(resultado.Tiempos) == 0 {
 		return tipos.ResultadoAgregacion{}, fmt.Errorf("no hay datos en el rango especificado para: %s", path)
 	}
 
+	// Extraer valores por columna (serie) una sola vez
+	valoresPorSerie := make([][]float64, len(resultado.Series))
+	for colIdx := range resultado.Series {
+		var valoresColumna []float64
+		for filaIdx := range resultado.Tiempos {
+			if v := resultado.Valores[filaIdx][colIdx]; v != nil {
+				valorFloat, err := convertirAFloat64(v)
+				if err == nil {
+					valoresColumna = append(valoresColumna, valorFloat)
+				}
+			}
+		}
+		valoresPorSerie[colIdx] = valoresColumna
+	}
+
+	// Calcular todas las agregaciones sobre los valores extraídos
+	// Estructura: [agregacion][serie]
+	valoresResultado := make([][]float64, len(agregaciones))
+	for aggIdx, agregacion := range agregaciones {
+		valoresResultado[aggIdx] = make([]float64, len(resultado.Series))
+		for colIdx, valoresColumna := range valoresPorSerie {
+			if len(valoresColumna) == 0 {
+				valoresResultado[aggIdx][colIdx] = math.NaN()
+				continue
+			}
+			valor, err := CalcularAgregacionSimple(valoresColumna, agregacion)
+			if err != nil {
+				valoresResultado[aggIdx][colIdx] = math.NaN()
+			} else {
+				valoresResultado[aggIdx][colIdx] = valor
+			}
+		}
+	}
+
 	return tipos.ResultadoAgregacion{
-		Series:  seriesConDatos, // Ya ordenadas alfabéticamente por ConsultarRango
-		Valores: valoresFinales,
+		Series:       resultado.Series, // Ya ordenadas alfabéticamente por ConsultarRango
+		Agregaciones: agregaciones,
+		Valores:      valoresResultado,
 	}, nil
 }
 
 // ConsultarAgregacionTemporal calcula agregaciones agrupadas por intervalos de tiempo (downsampling).
-// Retorna una matriz donde cada columna es una serie y cada fila es un bucket temporal.
+// Soporta múltiples agregaciones en una sola pasada sobre los datos.
+// Retorna una matriz donde cada agregación tiene una matriz [bucket][serie].
 // Los valores faltantes (bucket sin datos para una serie) se representan como math.NaN().
 //
 // El parámetro path puede ser:
 //   - Path exacto: "sensor_01/temperatura"
 //   - Patrón con wildcard: "sensor_*/temperatura"
 //
-// Ejemplo: ConsultarAgregacionTemporal("sensor_01/temp", inicio, fin, AgregacionPromedio, time.Hour)
-// retorna el promedio por cada hora en el rango para cada serie.
+// Ejemplo: ConsultarAgregacionTemporal("sensor_01/temp", inicio, fin, []TipoAgregacion{AgregacionMinimo, AgregacionMaximo}, time.Hour)
+// retorna el mínimo y máximo por cada hora en el rango para cada serie.
 func (me *ManagerEdge) ConsultarAgregacionTemporal(
 	path string,
 	tiempoInicio, tiempoFin time.Time,
-	agregacion tipos.TipoAgregacion,
+	agregaciones []tipos.TipoAgregacion,
 	intervalo time.Duration,
 ) (tipos.ResultadoAgregacionTemporal, error) {
 	if intervalo <= 0 {
 		return tipos.ResultadoAgregacionTemporal{}, fmt.Errorf("el intervalo debe ser mayor a cero")
+	}
+	if len(agregaciones) == 0 {
+		return tipos.ResultadoAgregacionTemporal{}, fmt.Errorf("debe especificar al menos una agregación")
 	}
 
 	// Usar ConsultarRango para obtener datos en formato tabular
@@ -484,38 +523,39 @@ func (me *ManagerEdge) ConsultarAgregacionTemporal(
 
 			valorFloat, err := convertirAFloat64(valor)
 			if err != nil {
-				if agregacion == tipos.AgregacionCount {
-					valorFloat = 1.0
-				} else {
-					continue
-				}
+				continue
 			}
 			acumuladores[bucketIdx][colIdx] = append(acumuladores[bucketIdx][colIdx], valorFloat)
 		}
 	}
 
-	// Calcular agregación y construir matriz de resultados
-	valores := make([][]float64, numBuckets)
-	for b := 0; b < numBuckets; b++ {
-		valores[b] = make([]float64, numSeries)
-		for s := 0; s < numSeries; s++ {
-			if len(acumuladores[b][s]) == 0 {
-				valores[b][s] = math.NaN()
-			} else {
-				valorAgregado, err := CalcularAgregacionSimple(acumuladores[b][s], agregacion)
-				if err != nil {
-					valores[b][s] = math.NaN()
+	// Calcular todas las agregaciones y construir matriz de resultados
+	// Estructura: [agregacion][bucket][serie]
+	valores := make([][][]float64, len(agregaciones))
+	for aggIdx, agregacion := range agregaciones {
+		valores[aggIdx] = make([][]float64, numBuckets)
+		for b := 0; b < numBuckets; b++ {
+			valores[aggIdx][b] = make([]float64, numSeries)
+			for s := 0; s < numSeries; s++ {
+				if len(acumuladores[b][s]) == 0 {
+					valores[aggIdx][b][s] = math.NaN()
 				} else {
-					valores[b][s] = valorAgregado
+					valorAgregado, err := CalcularAgregacionSimple(acumuladores[b][s], agregacion)
+					if err != nil {
+						valores[aggIdx][b][s] = math.NaN()
+					} else {
+						valores[aggIdx][b][s] = valorAgregado
+					}
 				}
 			}
 		}
 	}
 
 	return tipos.ResultadoAgregacionTemporal{
-		Series:  resultado.Series, // Ya ordenadas alfabéticamente por ConsultarRango
-		Tiempos: buckets,
-		Valores: valores,
+		Series:       resultado.Series, // Ya ordenadas alfabéticamente por ConsultarRango
+		Tiempos:      buckets,
+		Agregaciones: agregaciones,
+		Valores:      valores,
 	}, nil
 }
 
@@ -538,4 +578,16 @@ func calcularBucketIdx(tiempo, tiempoInicio, intervalo int64, numBuckets int) in
 		return numBuckets - 1 // Último bucket captura valores hasta tiempoFin
 	}
 	return idx
+}
+
+// convertirAFloat64 convierte un valor interface{} a float64 para agregaciones numéricas
+func convertirAFloat64(valor interface{}) (float64, error) {
+	switch v := valor.(type) {
+	case float64:
+		return v, nil
+	case int64:
+		return float64(v), nil
+	default:
+		return 0, fmt.Errorf("tipo %T no se puede convertir a float64", valor)
+	}
 }

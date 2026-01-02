@@ -17,8 +17,13 @@ type SolicitudConsultaRango struct {
 }
 
 // SolicitudConsultaPunto representa una solicitud de último punto
+// Los campos TiempoInicio y TiempoFin son opcionales:
+//   - Si ambos son nil: retorna el último punto absoluto de cada serie
+//   - Si se especifican: retorna el último punto dentro del rango temporal
 type SolicitudConsultaPunto struct {
-	Serie string
+	Serie        string
+	TiempoInicio *int64 // nil = sin límite inferior (Unix nanosegundos)
+	TiempoFin    *int64 // nil = sin límite superior (Unix nanosegundos)
 }
 
 // ResultadoConsultaPunto representa el último punto de múltiples series en formato columnar.
@@ -51,28 +56,30 @@ type RespuestaConsultaPunto struct {
 	Error     string
 }
 
-// SolicitudConsultaAgregacion representa una solicitud de agregación simple
+// SolicitudConsultaAgregacion representa una solicitud de agregación (soporta múltiples)
 type SolicitudConsultaAgregacion struct {
 	Serie        string
-	TiempoInicio int64 // Unix nanosegundos
-	TiempoFin    int64 // Unix nanosegundos
-	Agregacion   TipoAgregacion
+	TiempoInicio int64            // Unix nanosegundos
+	TiempoFin    int64            // Unix nanosegundos
+	Agregaciones []TipoAgregacion // Lista de agregaciones a calcular
 }
 
-// SolicitudConsultaAgregacionTemporal representa una solicitud de downsampling
+// SolicitudConsultaAgregacionTemporal representa una solicitud de downsampling (soporta múltiples)
 type SolicitudConsultaAgregacionTemporal struct {
 	Serie        string
-	TiempoInicio int64 // Unix nanosegundos
-	TiempoFin    int64 // Unix nanosegundos
-	Agregacion   TipoAgregacion
-	Intervalo    int64 // Duration en nanosegundos
+	TiempoInicio int64            // Unix nanosegundos
+	TiempoFin    int64            // Unix nanosegundos
+	Agregaciones []TipoAgregacion // Lista de agregaciones a calcular
+	Intervalo    int64            // Duration en nanosegundos
 }
 
-// ResultadoAgregacion representa el resultado columnar de una agregación.
-// Cada serie tiene su valor agregado independiente.
+// ResultadoAgregacion representa el resultado columnar de múltiples agregaciones.
+// Soporta múltiples agregaciones en una sola consulta.
+// Estructura de Valores: [agregacion][serie]
 type ResultadoAgregacion struct {
-	Series  []string  // Nombres de series ordenados alfabéticamente
-	Valores []float64 // Valor agregado por serie (mismo orden)
+	Series       []string         // Nombres de series ordenados alfabéticamente
+	Agregaciones []TipoAgregacion // Lista ordenada de agregaciones calculadas
+	Valores      [][]float64      // Matriz [agregacion][serie]
 }
 
 // RespuestaConsultaAgregacion respuesta con resultado de agregación columnar
@@ -132,6 +139,8 @@ func init() {
 	gob.Register(RespuestaConsultaAgregacionTemporal{})
 	gob.Register(ResultadoAgregacionTemporal{})
 	gob.Register([][]float64{})
+	gob.Register([][][]float64{})
+	gob.Register([]TipoAgregacion{})
 
 	// Tipos de datos
 	gob.Register(Medicion{})

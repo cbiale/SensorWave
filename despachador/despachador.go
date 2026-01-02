@@ -53,10 +53,10 @@ type clienteEdge interface {
 	// ConsultarUltimoPunto consulta el último punto de una o más series
 	ConsultarUltimoPunto(ctx context.Context, direccion string, req tipos.SolicitudConsultaPunto) (*tipos.RespuestaConsultaPunto, error)
 
-	// ConsultarAgregacion consulta una agregación simple (promedio, min, max, etc.)
+	// ConsultarAgregacion consulta múltiples agregaciones (promedio, min, max, etc.)
 	ConsultarAgregacion(ctx context.Context, direccion string, req tipos.SolicitudConsultaAgregacion) (*tipos.RespuestaConsultaAgregacion, error)
 
-	// ConsultarAgregacionTemporal consulta agregaciones agrupadas por intervalos (downsampling)
+	// ConsultarAgregacionTemporal consulta múltiples agregaciones agrupadas por intervalos (downsampling)
 	ConsultarAgregacionTemporal(ctx context.Context, direccion string, req tipos.SolicitudConsultaAgregacionTemporal) (*tipos.RespuestaConsultaAgregacionTemporal, error)
 }
 
@@ -439,10 +439,21 @@ func obtenerDireccionEdge(nodo tipos.Nodo) string {
 }
 
 // consultarPuntoEdge consulta el último punto al edge con timeout
+// Los tiempos son opcionales (nil = sin filtro temporal)
 // Retorna el resultado columnar y error si hubo problemas
-func (m *ManagerDespachador) consultarPuntoEdge(nodo tipos.Nodo, nombreSerie string, timeout time.Duration) (tipos.ResultadoConsultaPunto, error) {
+func (m *ManagerDespachador) consultarPuntoEdge(nodo tipos.Nodo, nombreSerie string, tiempoInicio, tiempoFin *time.Time, timeout time.Duration) (tipos.ResultadoConsultaPunto, error) {
 	solicitud := tipos.SolicitudConsultaPunto{
 		Serie: nombreSerie,
+	}
+
+	// Convertir tiempos opcionales a *int64
+	if tiempoInicio != nil {
+		t := tiempoInicio.UnixNano()
+		solicitud.TiempoInicio = &t
+	}
+	if tiempoFin != nil {
+		t := tiempoFin.UnixNano()
+		solicitud.TiempoFin = &t
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -810,13 +821,27 @@ func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, ti
 
 // ConsultarUltimoPunto busca el último punto de cada serie combinando S3 y edge.
 // Soporta wildcards en el path de la serie (ej: */temp, sensor_01/*).
+// Los tiempos son opcionales:
+//   - Si ambos son nil: retorna el último punto absoluto de cada serie
+//   - Si se especifican: retorna el último punto dentro del rango temporal
+//
 // Retorna el último punto de CADA serie en formato columnar.
 // Las series sin datos son excluidas del resultado.
-func (m *ManagerDespachador) ConsultarUltimoPunto(nombreSerie string) (tipos.ResultadoConsultaPunto, error) {
+func (m *ManagerDespachador) ConsultarUltimoPunto(nombreSerie string, tiempoInicio, tiempoFin *time.Time) (tipos.ResultadoConsultaPunto, error) {
 	// Buscar todas las series que coincidan (path exacto o wildcard)
 	seriesEncontradas, err := m.buscarSeriesPorPath(nombreSerie)
 	if err != nil {
 		return tipos.ResultadoConsultaPunto{}, err
+	}
+
+	// Convertir tiempos para S3
+	var inicioNano, finNano int64
+	if tiempoInicio != nil && tiempoFin != nil {
+		inicioNano = tiempoInicio.UnixNano()
+		finNano = tiempoFin.UnixNano()
+	} else {
+		inicioNano = 0
+		finNano = time.Now().UnixNano()
 	}
 
 	// Canal para recoger resultados de todas las consultas
@@ -836,7 +861,7 @@ func (m *ManagerDespachador) ConsultarUltimoPunto(nombreSerie string) (tipos.Res
 			encontrado := false
 
 			// Primero intentar con el edge (tiene datos más recientes)
-			resEdge, err := m.consultarPuntoEdge(sn.nodo, sn.path, 5*time.Second)
+			resEdge, err := m.consultarPuntoEdge(sn.nodo, sn.path, tiempoInicio, tiempoFin, 5*time.Second)
 			if err == nil && len(resEdge.Series) > 0 {
 				// El edge retorna formato columnar, buscar nuestra serie
 				for i, s := range resEdge.Series {
@@ -849,23 +874,29 @@ func (m *ManagerDespachador) ConsultarUltimoPunto(nombreSerie string) (tipos.Res
 				}
 			}
 
-			// Si el edge no responde o no tiene datos, buscar en S3 el bloque más reciente
+			// Si el edge no responde o no tiene datos, buscar en S3
 			if !encontrado {
-				bloques, err := m.listarBloquesEnRango(sn.nodo.NodoID, sn.serie.SerieId, 0, time.Now().UnixNano())
+				bloques, err := m.listarBloquesEnRango(sn.nodo.NodoID, sn.serie.SerieId, inicioNano, finNano)
 				if err == nil && len(bloques) > 0 {
 					ultimoBloque := bloques[len(bloques)-1]
 					mediciones, err := m.descargarYDescomprimirBloque(ultimoBloque, sn.serie)
 					if err == nil && len(mediciones) > 0 {
-						// Encontrar la medición más reciente
-						ultimaMed := mediciones[0]
-						for _, med := range mediciones[1:] {
-							if med.Tiempo > ultimaMed.Tiempo {
-								ultimaMed = med
+						// Encontrar la medición más reciente dentro del rango
+						var ultimaMed *tipos.Medicion
+						for i := range mediciones {
+							med := &mediciones[i]
+							// Verificar que está en el rango si se especificó
+							if med.Tiempo >= inicioNano && med.Tiempo <= finNano {
+								if ultimaMed == nil || med.Tiempo > ultimaMed.Tiempo {
+									ultimaMed = med
+								}
 							}
 						}
-						tiempo = ultimaMed.Tiempo
-						valor = ultimaMed.Valor
-						encontrado = true
+						if ultimaMed != nil {
+							tiempo = ultimaMed.Tiempo
+							valor = ultimaMed.Valor
+							encontrado = true
+						}
 					}
 				}
 			}
@@ -1030,28 +1061,33 @@ func (m *ManagerDespachador) buscarSeriesPorPath(path string) ([]serieConNodo, e
 	return resultados, nil
 }
 
-// ConsultarAgregacion calcula una agregación simple combinando datos de S3 y edge.
+// ConsultarAgregacion calcula múltiples agregaciones combinando datos de S3 y edge.
 // Soporta tipos de agregación: promedio, maximo, minimo, suma, count.
 // Soporta wildcards en el path de la serie (ej: */temp, sensor_01/*).
-// Retorna un valor agregado por cada serie en formato columnar.
+// Retorna una matriz donde Valores[agregacion][serie] contiene el valor agregado.
 func (m *ManagerDespachador) ConsultarAgregacion(
 	nombreSerie string,
 	tiempoInicio, tiempoFin time.Time,
-	agregacion tipos.TipoAgregacion,
+	agregaciones []tipos.TipoAgregacion,
 ) (tipos.ResultadoAgregacion, error) {
+	if len(agregaciones) == 0 {
+		return tipos.ResultadoAgregacion{}, fmt.Errorf("debe especificar al menos una agregación")
+	}
+
 	// Usar ConsultarRango para obtener datos combinados
 	resultado, err := m.ConsultarRango(nombreSerie, tiempoInicio, tiempoFin)
 	if err != nil {
 		return tipos.ResultadoAgregacion{}, err
 	}
 
-	// Calcular agregación POR COLUMNA (serie)
-	seriesConDatos := make([]string, 0, len(resultado.Series))
-	valoresFinales := make([]float64, 0, len(resultado.Series))
+	if len(resultado.Series) == 0 || len(resultado.Tiempos) == 0 {
+		return tipos.ResultadoAgregacion{}, fmt.Errorf("no se encontraron datos para %s en el rango especificado", nombreSerie)
+	}
 
-	for colIdx, nombreSerie := range resultado.Series {
+	// Extraer valores por columna (serie) una sola vez
+	valoresPorSerie := make([][]float64, len(resultado.Series))
+	for colIdx := range resultado.Series {
 		var valoresColumna []float64
-
 		for filaIdx := range resultado.Tiempos {
 			if v := resultado.Valores[filaIdx][colIdx]; v != nil {
 				switch val := v.(type) {
@@ -1059,45 +1095,55 @@ func (m *ManagerDespachador) ConsultarAgregacion(
 					valoresColumna = append(valoresColumna, val)
 				case int64:
 					valoresColumna = append(valoresColumna, float64(val))
-				default:
-					// Para COUNT, contar cualquier valor como 1
-					if agregacion == tipos.AgregacionCount {
-						valoresColumna = append(valoresColumna, 1.0)
-					}
 				}
 			}
 		}
+		valoresPorSerie[colIdx] = valoresColumna
+	}
 
-		if len(valoresColumna) > 0 {
+	// Calcular todas las agregaciones: Valores[agregacion][serie]
+	numAgregaciones := len(agregaciones)
+	numSeries := len(resultado.Series)
+	valores := make([][]float64, numAgregaciones)
+
+	for agIdx, agregacion := range agregaciones {
+		valores[agIdx] = make([]float64, numSeries)
+		for serieIdx, valoresColumna := range valoresPorSerie {
+			if len(valoresColumna) == 0 {
+				valores[agIdx][serieIdx] = math.NaN()
+				continue
+			}
 			valor, err := calcularAgregacionSimple(valoresColumna, agregacion)
-			if err == nil {
-				seriesConDatos = append(seriesConDatos, nombreSerie)
-				valoresFinales = append(valoresFinales, valor)
+			if err != nil {
+				valores[agIdx][serieIdx] = math.NaN()
+			} else {
+				valores[agIdx][serieIdx] = valor
 			}
 		}
 	}
 
-	if len(seriesConDatos) == 0 {
-		return tipos.ResultadoAgregacion{}, fmt.Errorf("no se encontraron datos para %s en el rango especificado", nombreSerie)
-	}
-
 	return tipos.ResultadoAgregacion{
-		Series:  seriesConDatos, // Ya ordenadas alfabéticamente por ConsultarRango
-		Valores: valoresFinales,
+		Series:       resultado.Series, // Ya ordenadas alfabéticamente por ConsultarRango
+		Agregaciones: agregaciones,
+		Valores:      valores, // [agregacion][serie]
 	}, nil
 }
 
-// ConsultarAgregacionTemporal calcula agregaciones agrupadas por intervalos de tiempo (downsampling).
+// ConsultarAgregacionTemporal calcula múltiples agregaciones agrupadas por intervalos de tiempo (downsampling).
 // Combina datos de S3 y edge, luego agrupa por intervalos del tamaño especificado.
 // Soporta wildcards en el path de la serie (ej: */temp, sensor_01/*).
-// Retorna una matriz donde cada columna es una serie y cada fila es un bucket temporal.
+// Retorna una matriz donde Valores[agregacion][bucket][serie] contiene el valor agregado.
 // Los valores faltantes (bucket sin datos para una serie) se representan como math.NaN().
 func (m *ManagerDespachador) ConsultarAgregacionTemporal(
 	nombreSerie string,
 	tiempoInicio, tiempoFin time.Time,
-	agregacion tipos.TipoAgregacion,
+	agregaciones []tipos.TipoAgregacion,
 	intervalo time.Duration,
 ) (tipos.ResultadoAgregacionTemporal, error) {
+	if len(agregaciones) == 0 {
+		return tipos.ResultadoAgregacionTemporal{}, fmt.Errorf("debe especificar al menos una agregación")
+	}
+
 	if intervalo <= 0 {
 		return tipos.ResultadoAgregacionTemporal{}, fmt.Errorf("intervalo debe ser mayor a cero")
 	}
@@ -1116,6 +1162,7 @@ func (m *ManagerDespachador) ConsultarAgregacionTemporal(
 	buckets := generarBuckets(tiempoInicio.UnixNano(), tiempoFin.UnixNano(), intervalo.Nanoseconds())
 	numBuckets := len(buckets)
 	numSeries := len(resultado.Series)
+	numAgregaciones := len(agregaciones)
 
 	// Inicializar acumuladores para cada [bucket][serie]
 	acumuladores := make([][][]float64, numBuckets)
@@ -1149,38 +1196,38 @@ func (m *ManagerDespachador) ConsultarAgregacionTemporal(
 			case int64:
 				valorFloat = float64(v)
 			default:
-				if agregacion == tipos.AgregacionCount {
-					valorFloat = 1.0
-				} else {
-					continue
-				}
+				continue
 			}
 			acumuladores[bucketIdx][colIdx] = append(acumuladores[bucketIdx][colIdx], valorFloat)
 		}
 	}
 
-	// Calcular agregación y construir matriz de resultados
-	valores := make([][]float64, numBuckets)
-	for b := 0; b < numBuckets; b++ {
-		valores[b] = make([]float64, numSeries)
-		for s := 0; s < numSeries; s++ {
-			if len(acumuladores[b][s]) == 0 {
-				valores[b][s] = math.NaN()
-			} else {
-				valorAgregado, err := calcularAgregacionSimple(acumuladores[b][s], agregacion)
-				if err != nil {
-					valores[b][s] = math.NaN()
+	// Calcular todas las agregaciones: Valores[agregacion][bucket][serie]
+	valores := make([][][]float64, numAgregaciones)
+	for agIdx, agregacion := range agregaciones {
+		valores[agIdx] = make([][]float64, numBuckets)
+		for b := 0; b < numBuckets; b++ {
+			valores[agIdx][b] = make([]float64, numSeries)
+			for s := 0; s < numSeries; s++ {
+				if len(acumuladores[b][s]) == 0 {
+					valores[agIdx][b][s] = math.NaN()
 				} else {
-					valores[b][s] = valorAgregado
+					valorAgregado, err := calcularAgregacionSimple(acumuladores[b][s], agregacion)
+					if err != nil {
+						valores[agIdx][b][s] = math.NaN()
+					} else {
+						valores[agIdx][b][s] = valorAgregado
+					}
 				}
 			}
 		}
 	}
 
 	return tipos.ResultadoAgregacionTemporal{
-		Series:  resultado.Series, // Ya ordenadas alfabéticamente por ConsultarRango
-		Tiempos: buckets,
-		Valores: valores,
+		Series:       resultado.Series, // Ya ordenadas alfabéticamente por ConsultarRango
+		Tiempos:      buckets,
+		Agregaciones: agregaciones,
+		Valores:      valores, // [agregacion][bucket][serie]
 	}, nil
 }
 

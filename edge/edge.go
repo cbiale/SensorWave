@@ -652,6 +652,11 @@ func (me *ManagerEdge) HabilitarMotorReglas(habilitado bool) {
 	me.MotorReglas.Habilitar(habilitado)
 }
 
+// ObtenerEstadoMotorReglas devuelve el estado actual del motor de reglas
+func (me *ManagerEdge) ObtenerEstadoMotorReglas() EstadoMotorReglas {
+	return me.MotorReglas.ObtenerEstado()
+}
+
 // EliminarSerie elimina una serie y todos sus datos asociados.
 // Elimina: metadatos, bloques de datos locales, cache y buffer.
 // Si S3 está configurado, registra la eliminación pendiente y la procesa (best-effort).

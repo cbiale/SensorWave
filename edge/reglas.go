@@ -108,6 +108,32 @@ type MotorReglas struct {
 	db             *pebble.DB   // Conexión a PebbleDB para persistencia de reglas
 }
 
+// EstadoMotorReglas contiene información sobre el estado actual del motor de reglas
+type EstadoMotorReglas struct {
+	Habilitado    bool // Si el motor está habilitado
+	ReglasActivas int  // Cantidad de reglas activas
+	ReglasTotal   int  // Cantidad total de reglas
+}
+
+// ObtenerEstado devuelve el estado actual del motor de reglas
+func (mr *MotorReglas) ObtenerEstado() EstadoMotorReglas {
+	mr.mu.RLock()
+	defer mr.mu.RUnlock()
+
+	activas := 0
+	for _, regla := range mr.reglas {
+		if regla.Activa {
+			activas++
+		}
+	}
+
+	return EstadoMotorReglas{
+		Habilitado:    mr.habilitado,
+		ReglasActivas: activas,
+		ReglasTotal:   len(mr.reglas),
+	}
+}
+
 func nuevoMotorReglasIntegrado(manager *ManagerEdge, db *pebble.DB) *MotorReglas {
 	motor := &MotorReglas{
 		reglas:         make(map[string]*Regla),
@@ -125,23 +151,14 @@ func nuevoMotorReglasIntegrado(manager *ManagerEdge, db *pebble.DB) *MotorReglas
 }
 
 func (mr *MotorReglas) registrarEjecutoresPorDefecto() {
+	// Ejecutor log: útil para debugging y desarrollo
 	mr.ejecutores["log"] = func(accion Accion, regla *Regla, valores map[string]interface{}) error {
 		log.Printf("Regla '%s' activada - Acción: %s, Destino: %s, Valores: %v",
 			regla.ID, accion.Tipo, accion.Destino, valores)
 		return nil
 	}
-
-	mr.ejecutores["enviar_alerta"] = func(accion Accion, regla *Regla, valores map[string]interface{}) error {
-		log.Printf("ALERTA: Regla '%s' - %s. Valores: %v",
-			regla.ID, accion.Destino, valores)
-		return nil
-	}
-
-	mr.ejecutores["activar_actuador"] = func(accion Accion, regla *Regla, valores map[string]interface{}) error {
-		log.Printf("ACTUADOR: Activando %s por regla '%s'. Valores: %v",
-			accion.Destino, regla.ID, valores)
-		return nil
-	}
+	// Nota: Para publicar a actuadores usar PUBLICAR_MQTT, PUBLICAR_NATS, PUBLICAR_HTTP o PUBLICAR_COAP
+	// registrados via RegistrarEjecutorMQTT(), RegistrarEjecutorNATS(), etc. en ejecutores.go
 }
 
 func (mr *MotorReglas) ProcesarDato(serie string, valor interface{}, timestamp time.Time) error {
@@ -414,6 +431,7 @@ func (mr *MotorReglas) aplicarOperador(valor1 interface{}, operador TipoOperador
 
 func (mr *MotorReglas) ejecutarAcciones(regla *Regla, timestamp time.Time) error {
 	valores := make(map[string]interface{})
+	var seriePrincipal string
 
 	// Recolectar valores de las condiciones para pasarlos a las acciones
 	for _, condicion := range regla.Condiciones {
@@ -430,8 +448,24 @@ func (mr *MotorReglas) ejecutarAcciones(regla *Regla, timestamp time.Time) error
 			if i < len(resultado.Valores) {
 				valores[serie] = resultado.Valores[i]
 			}
+			// Guardar la primera serie como principal (para variables de contexto)
+			if seriePrincipal == "" {
+				seriePrincipal = serie
+			}
 		}
 	}
+
+	// Agregar metadatos de contexto para resolución de plantillas
+	if seriePrincipal != "" {
+		valores["_serie"] = seriePrincipal
+		partes := strings.Split(seriePrincipal, "/")
+		for i, parte := range partes {
+			valores[fmt.Sprintf("_serie_%d", i)] = parte
+		}
+	}
+	valores["_regla_id"] = regla.ID
+	valores["_regla_nombre"] = regla.Nombre
+	valores["_timestamp"] = timestamp
 
 	for _, accion := range regla.Acciones {
 		ejecutor, exists := mr.ejecutores[accion.Tipo]
@@ -662,6 +696,16 @@ func (mr *MotorReglas) validarAccion(accion *Accion) error {
 
 	if accion.Destino == "" {
 		return fmt.Errorf("destino de acción no puede estar vacío")
+	}
+
+	// Validar sintaxis de plantilla en Destino
+	if err := ValidarPlantilla(accion.Destino); err != nil {
+		return fmt.Errorf("plantilla de destino inválida: %v", err)
+	}
+
+	// Validar que variables requeridas estén en Params (excepto las de contexto)
+	if err := ValidarVariablesRequeridas(accion.Destino, accion.Params); err != nil {
+		return fmt.Errorf("variables faltantes en params: %v", err)
 	}
 
 	return nil

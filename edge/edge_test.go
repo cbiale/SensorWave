@@ -3208,9 +3208,9 @@ func TestEliminarSerieDeS3_Exitoso(t *testing.T) {
 	}()
 
 	// Simular 3 objetos en S3
-	key1 := aws.String("test-node/data/0000000001/bloque1")
-	key2 := aws.String("test-node/data/0000000001/bloque2")
-	key3 := aws.String("test-node/data/0000000001/bloque3")
+	key1 := aws.String("test-node/0000000001_00000000000000001000_00000000000000002000")
+	key2 := aws.String("test-node/0000000001_00000000000000002000_00000000000000003000")
+	key3 := aws.String("test-node/0000000001_00000000000000003000_00000000000000004000")
 
 	mockS3 := &mockClienteS3{
 		listObjectsOutput: &s3.ListObjectsV2Output{

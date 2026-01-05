@@ -103,12 +103,19 @@ func (me *ManagerEdge) MigrarAS3() error {
 		clave := string(iter.Key())
 		valor := iter.Value()
 
-		// Crear nombre de archivo en S3 basado en la clave
-		// Formato: nodoID/clave
-		nombreArchivo := fmt.Sprintf("%s/%s", me.nodoID, clave)
+		// Extraer serieId y tiempos de la clave local para generar clave S3
+		serieId, tiempoInicio, tiempoFin, err := parsearClaveLocalDatos(clave)
+		if err != nil {
+			log.Printf("Advertencia: clave con formato inválido %s: %v", clave, err)
+			continue
+		}
+
+		// Crear nombre de archivo en S3 con formato optimizado
+		// Formato: nodoID/{serieId}_{tiempoInicio}_{tiempoFin}
+		nombreArchivo := tipos.GenerarClaveS3Datos(me.nodoID, serieId, tiempoInicio, tiempoFin)
 
 		// Subir archivo a S3
-		_, err := clienteS3.PutObject(ctx, &s3.PutObjectInput{
+		_, err = clienteS3.PutObject(ctx, &s3.PutObjectInput{
 			Bucket: aws.String(configuracionS3.Bucket),
 			Key:    aws.String(nombreArchivo),
 			Body:   bytes.NewReader(valor),
@@ -217,11 +224,18 @@ func (me *ManagerEdge) MigrarPorTiempoAlmacenamiento() error {
 		for i, clave := range clavesAMigrar {
 			valor := valoresAMigrar[i]
 
-			// Crear nombre de archivo en S3
-			nombreArchivo := fmt.Sprintf("%s/%s", me.nodoID, string(clave))
+			// Extraer serieId y tiempos de la clave local para generar clave S3
+			serieId, tiempoInicio, tiempoFin, err := parsearClaveLocalDatos(string(clave))
+			if err != nil {
+				log.Printf("Advertencia: clave con formato inválido %s: %v", string(clave), err)
+				continue
+			}
+
+			// Crear nombre de archivo en S3 con formato optimizado
+			nombreArchivo := tipos.GenerarClaveS3Datos(me.nodoID, serieId, tiempoInicio, tiempoFin)
 
 			// Subir a S3
-			_, err := clienteS3.PutObject(ctx, &s3.PutObjectInput{
+			_, err = clienteS3.PutObject(ctx, &s3.PutObjectInput{
 				Bucket: aws.String(configuracionS3.Bucket),
 				Key:    aws.String(nombreArchivo),
 				Body:   bytes.NewReader(valor),
@@ -270,6 +284,37 @@ func parsearTiempoFinDeClave(clave string) (int64, error) {
 	}
 
 	return tiempoFin, nil
+}
+
+// parsearClaveLocalDatos extrae serieId, tiempoInicio y tiempoFin de una clave local de PebbleDB
+// Formato: data/{serieId}/{tiempoInicio}_{tiempoFin}
+func parsearClaveLocalDatos(clave string) (serieId int, tiempoInicio, tiempoFin int64, err error) {
+	partes := strings.Split(clave, "/")
+	if len(partes) != 3 || partes[0] != "data" {
+		return 0, 0, 0, fmt.Errorf("formato de clave local inválido: %s", clave)
+	}
+
+	serieId64, err := strconv.ParseInt(strings.TrimLeft(partes[1], "0"), 10, 32)
+	if err != nil && partes[1] != "0000000000" {
+		return 0, 0, 0, fmt.Errorf("error parseando serieId: %v", err)
+	}
+
+	tiempos := strings.Split(partes[2], "_")
+	if len(tiempos) != 2 {
+		return 0, 0, 0, fmt.Errorf("formato de tiempos inválido: %s", partes[2])
+	}
+
+	tiempoInicio, err = strconv.ParseInt(strings.TrimLeft(tiempos[0], "0"), 10, 64)
+	if err != nil && tiempos[0] != strings.Repeat("0", 20) {
+		return 0, 0, 0, fmt.Errorf("error parseando tiempoInicio: %v", err)
+	}
+
+	tiempoFin, err = strconv.ParseInt(strings.TrimLeft(tiempos[1], "0"), 10, 64)
+	if err != nil && tiempos[1] != strings.Repeat("0", 20) {
+		return 0, 0, 0, fmt.Errorf("error parseando tiempoFin: %v", err)
+	}
+
+	return int(serieId64), tiempoInicio, tiempoFin, nil
 }
 
 // IniciarMigracionAutomatica inicia un goroutine que ejecuta la migración por tiempo
@@ -395,7 +440,7 @@ func (me *ManagerEdge) eliminarSerieDeS3(serieId int) (int, error) {
 	}
 
 	ctx := context.TODO()
-	prefijo := fmt.Sprintf("%s/data/%010d/", me.nodoID, serieId)
+	prefijo := tipos.GenerarPrefijoS3Serie(me.nodoID, serieId)
 	objetosEliminados := 0
 
 	// Listar objetos con el prefijo de la serie

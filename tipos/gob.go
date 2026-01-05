@@ -30,18 +30,20 @@ type SolicitudConsultaPunto struct {
 // Cada serie tiene su último punto (timestamp y valor).
 // Series sin datos son excluidas del resultado.
 type ResultadoConsultaPunto struct {
-	Series  []string      // Nombres de series ordenados alfabéticamente
-	Tiempos []int64       // Timestamp del punto por serie (Unix nanosegundos)
-	Valores []interface{} // Valor del punto por serie
+	Series             []string      // Nombres de series ordenados alfabéticamente
+	Tiempos            []int64       // Timestamp del punto por serie (Unix nanosegundos)
+	Valores            []interface{} // Valor del punto por serie
+	NodosNoDisponibles []string      // IDs de nodos que no respondieron (solo en consultas globales)
 }
 
 // ResultadoConsultaRango representa el resultado de una consulta de rango en formato tabular.
 // Cada serie temporal es una columna, los timestamps son las filas.
 // Valores faltantes se representan como nil.
 type ResultadoConsultaRango struct {
-	Series  []string        // Columnas: nombres de series ordenados alfabéticamente
-	Tiempos []int64         // Filas: timestamps únicos ordenados ascendente (Unix nanosegundos)
-	Valores [][]interface{} // Matriz [fila][columna], nil = valor faltante
+	Series             []string        // Columnas: nombres de series ordenados alfabéticamente
+	Tiempos            []int64         // Filas: timestamps únicos ordenados ascendente (Unix nanosegundos)
+	Valores            [][]interface{} // Matriz [fila][columna], nil = valor faltante
+	NodosNoDisponibles []string        // IDs de nodos que no respondieron (solo en consultas globales)
 }
 
 // RespuestaConsultaRango respuesta con resultado tabular de consulta por rango
@@ -77,9 +79,10 @@ type SolicitudConsultaAgregacionTemporal struct {
 // Soporta múltiples agregaciones en una sola consulta.
 // Estructura de Valores: [agregacion][serie]
 type ResultadoAgregacion struct {
-	Series       []string         // Nombres de series ordenados alfabéticamente
-	Agregaciones []TipoAgregacion // Lista ordenada de agregaciones calculadas
-	Valores      [][]float64      // Matriz [agregacion][serie]
+	Series             []string         // Nombres de series ordenados alfabéticamente
+	Agregaciones       []TipoAgregacion // Lista ordenada de agregaciones calculadas
+	Valores            [][]float64      // Matriz [agregacion][serie]
+	NodosNoDisponibles []string         // IDs de nodos que no respondieron (solo en consultas globales)
 }
 
 // RespuestaConsultaAgregacion respuesta con resultado de agregación columnar

@@ -345,3 +345,114 @@ func TestCrearClienteS3_EndpointHTTPS(t *testing.T) {
 
 	t.Log("✓ Cliente S3 creado correctamente con endpoint HTTPS")
 }
+
+// ==================== Tests de Claves S3 ====================
+
+// TestGenerarClaveS3Datos verifica generación de clave S3
+func TestGenerarClaveS3Datos(t *testing.T) {
+	clave := GenerarClaveS3Datos("nodo-001", 1, 1000, 2000)
+	expected := "nodo-001/0000000001_00000000000000001000_00000000000000002000"
+	if clave != expected {
+		t.Errorf("Clave incorrecta: esperada '%s', obtenida '%s'", expected, clave)
+	}
+	t.Log("✓ GenerarClaveS3Datos genera clave correcta")
+}
+
+// TestGenerarClaveS3Datos_SerieGrande verifica con valores grandes
+func TestGenerarClaveS3Datos_SerieGrande(t *testing.T) {
+	clave := GenerarClaveS3Datos("nodo-001", 999999999, 1704067200000000000, 1704153600000000000)
+	expected := "nodo-001/0999999999_01704067200000000000_01704153600000000000"
+	if clave != expected {
+		t.Errorf("Clave incorrecta: esperada '%s', obtenida '%s'", expected, clave)
+	}
+	t.Log("✓ GenerarClaveS3Datos maneja series grandes correctamente")
+}
+
+// TestGenerarPrefijoS3Serie verifica generación de prefijo
+func TestGenerarPrefijoS3Serie(t *testing.T) {
+	prefijo := GenerarPrefijoS3Serie("nodo-001", 1)
+	expected := "nodo-001/0000000001_"
+	if prefijo != expected {
+		t.Errorf("Prefijo incorrecto: esperado '%s', obtenido '%s'", expected, prefijo)
+	}
+	t.Log("✓ GenerarPrefijoS3Serie genera prefijo correcto")
+}
+
+// TestGenerarPrefijoS3Serie_SerieGrande verifica con serie grande
+func TestGenerarPrefijoS3Serie_SerieGrande(t *testing.T) {
+	prefijo := GenerarPrefijoS3Serie("nodo-edge-001", 123456789)
+	expected := "nodo-edge-001/0123456789_"
+	if prefijo != expected {
+		t.Errorf("Prefijo incorrecto: esperado '%s', obtenido '%s'", expected, prefijo)
+	}
+	t.Log("✓ GenerarPrefijoS3Serie maneja series grandes correctamente")
+}
+
+// TestParsearClaveS3Datos_Valida verifica parsing correcto
+func TestParsearClaveS3Datos_Valida(t *testing.T) {
+	clave := "nodo-001/0000000001_00000000000000001000_00000000000000002000"
+	serieId, tiempoInicio, tiempoFin, err := ParsearClaveS3Datos(clave)
+	if err != nil {
+		t.Errorf("No se esperaba error: %v", err)
+	}
+	if serieId != 1 {
+		t.Errorf("SerieId incorrecta: esperada 1, obtenida %d", serieId)
+	}
+	if tiempoInicio != 1000 {
+		t.Errorf("TiempoInicio incorrecto: esperado 1000, obtenido %d", tiempoInicio)
+	}
+	if tiempoFin != 2000 {
+		t.Errorf("TiempoFin incorrecto: esperado 2000, obtenido %d", tiempoFin)
+	}
+	t.Log("✓ ParsearClaveS3Datos parsea correctamente")
+}
+
+// TestParsearClaveS3Datos_ValoresGrandes verifica parsing de valores grandes
+func TestParsearClaveS3Datos_ValoresGrandes(t *testing.T) {
+	clave := "nodo-001/0999999999_01704067200000000000_01704153600000000000"
+	serieId, tiempoInicio, tiempoFin, err := ParsearClaveS3Datos(clave)
+	if err != nil {
+		t.Errorf("No se esperaba error: %v", err)
+	}
+	if serieId != 999999999 {
+		t.Errorf("SerieId incorrecta: esperada 999999999, obtenida %d", serieId)
+	}
+	if tiempoInicio != 1704067200000000000 {
+		t.Errorf("TiempoInicio incorrecto: esperado 1704067200000000000, obtenido %d", tiempoInicio)
+	}
+	if tiempoFin != 1704153600000000000 {
+		t.Errorf("TiempoFin incorrecto: esperado 1704153600000000000, obtenido %d", tiempoFin)
+	}
+	t.Log("✓ ParsearClaveS3Datos parsea valores grandes correctamente")
+}
+
+// TestParsearClaveS3Datos_FormatoInvalido verifica detección de errores
+func TestParsearClaveS3Datos_FormatoInvalido(t *testing.T) {
+	casos := []string{
+		"nodo-001/data/0000000001/1000_2000", // formato antiguo
+		"nodo-001",                           // sin nombre de bloque
+		"1000_2000",                          // sin nodoID
+		"nodo-001/invalido",                  // sin tiempos
+		"nodo-001/0000000001_1000",           // solo 2 componentes
+	}
+	for _, clave := range casos {
+		_, _, _, err := ParsearClaveS3Datos(clave)
+		if err == nil {
+			t.Errorf("Se esperaba error para clave '%s'", clave)
+		}
+	}
+	t.Log("✓ ParsearClaveS3Datos detecta formatos inválidos")
+}
+
+// TestParsearClaveS3Datos_Ceros verifica parsing de valores cero
+func TestParsearClaveS3Datos_Ceros(t *testing.T) {
+	clave := "nodo-001/0000000000_00000000000000000000_00000000000000000000"
+	serieId, tiempoInicio, tiempoFin, err := ParsearClaveS3Datos(clave)
+	if err != nil {
+		t.Errorf("No se esperaba error: %v", err)
+	}
+	if serieId != 0 || tiempoInicio != 0 || tiempoFin != 0 {
+		t.Errorf("Valores incorrectos: serieId=%d, inicio=%d, fin=%d", serieId, tiempoInicio, tiempoFin)
+	}
+	t.Log("✓ ParsearClaveS3Datos maneja valores cero correctamente")
+}

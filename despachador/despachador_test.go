@@ -818,9 +818,9 @@ func TestListarBloquesEnRango_ConBloques(t *testing.T) {
 	mockS3 := &mockClienteS3{
 		listObjectsOutput: &s3.ListObjectsV2Output{
 			Contents: []s3types.Object{
-				{Key: aws.String("nodo1/data/0000000001/00000000001000_00000000002000")},
-				{Key: aws.String("nodo1/data/0000000001/00000000002000_00000000003000")},
-				{Key: aws.String("nodo1/data/0000000001/00000000003000_00000000004000")},
+				{Key: aws.String("nodo1/0000000001_00000000000000001000_00000000000000002000")},
+				{Key: aws.String("nodo1/0000000001_00000000000000002000_00000000000000003000")},
+				{Key: aws.String("nodo1/0000000001_00000000000000003000_00000000000000004000")},
 			},
 		},
 	}
@@ -843,9 +843,9 @@ func TestListarBloquesEnRango_TodosLosBloques(t *testing.T) {
 	mockS3 := &mockClienteS3{
 		listObjectsOutput: &s3.ListObjectsV2Output{
 			Contents: []s3types.Object{
-				{Key: aws.String("nodo1/data/0000000001/00000000001000_00000000002000")},
-				{Key: aws.String("nodo1/data/0000000001/00000000002000_00000000003000")},
-				{Key: aws.String("nodo1/data/0000000001/00000000003000_00000000004000")},
+				{Key: aws.String("nodo1/0000000001_00000000000000001000_00000000000000002000")},
+				{Key: aws.String("nodo1/0000000001_00000000000000002000_00000000000000003000")},
+				{Key: aws.String("nodo1/0000000001_00000000000000003000_00000000000000004000")},
 			},
 		},
 	}
@@ -868,8 +868,8 @@ func TestListarBloquesEnRango_NingunBloqueEnRango(t *testing.T) {
 	mockS3 := &mockClienteS3{
 		listObjectsOutput: &s3.ListObjectsV2Output{
 			Contents: []s3types.Object{
-				{Key: aws.String("nodo1/data/0000000001/00000000001000_00000000002000")},
-				{Key: aws.String("nodo1/data/0000000001/00000000002000_00000000003000")},
+				{Key: aws.String("nodo1/0000000001_00000000000000001000_00000000000000002000")},
+				{Key: aws.String("nodo1/0000000001_00000000000000002000_00000000000000003000")},
 			},
 		},
 	}
@@ -909,10 +909,10 @@ func TestListarBloquesEnRango_FormatoIncorrecto(t *testing.T) {
 	mockS3 := &mockClienteS3{
 		listObjectsOutput: &s3.ListObjectsV2Output{
 			Contents: []s3types.Object{
-				{Key: aws.String("nodo1/data/0000000001/00000000001000_00000000002000")}, // Correcto
-				{Key: aws.String("nodo1/data/0000000001/bloque_invalido")},               // Incorrecto
-				{Key: aws.String("nodo1/data/0000000001")},                               // Sin nombre de bloque
-				{Key: aws.String("nodo1/data/0000000001/00000000003000_00000000004000")}, // Correcto
+				{Key: aws.String("nodo1/0000000001_00000000000000001000_00000000000000002000")}, // Correcto
+				{Key: aws.String("nodo1/0000000001_bloque_invalido")},                           // Incorrecto
+				{Key: aws.String("nodo1/0000000001")},                                           // Sin tiempos
+				{Key: aws.String("nodo1/0000000001_00000000000000003000_00000000000000004000")}, // Correcto
 			},
 		},
 	}
@@ -934,9 +934,9 @@ func TestListarBloquesEnRango_OrdenPorTiempo(t *testing.T) {
 	mockS3 := &mockClienteS3{
 		listObjectsOutput: &s3.ListObjectsV2Output{
 			Contents: []s3types.Object{
-				{Key: aws.String("nodo1/data/0000000001/00000000003000_00000000004000")},
-				{Key: aws.String("nodo1/data/0000000001/00000000001000_00000000002000")},
-				{Key: aws.String("nodo1/data/0000000001/00000000002000_00000000003000")},
+				{Key: aws.String("nodo1/0000000001_00000000000000003000_00000000000000004000")},
+				{Key: aws.String("nodo1/0000000001_00000000000000001000_00000000000000002000")},
+				{Key: aws.String("nodo1/0000000001_00000000000000002000_00000000000000003000")},
 			},
 		},
 	}
@@ -951,9 +951,9 @@ func TestListarBloquesEnRango_OrdenPorTiempo(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Len(t, bloques, 3)
 	// Verificar orden ascendente (los nombres tienen padding, asi que sort.Strings funciona)
-	assert.Contains(t, bloques[0], "00000000001000")
-	assert.Contains(t, bloques[1], "00000000002000")
-	assert.Contains(t, bloques[2], "00000000003000")
+	assert.Contains(t, bloques[0], "00000000000000001000")
+	assert.Contains(t, bloques[1], "00000000000000002000")
+	assert.Contains(t, bloques[2], "00000000000000003000")
 	t.Log("listarBloquesEnRango retorna bloques ordenados por tiempo")
 }
 
@@ -1583,7 +1583,7 @@ func TestConsultarDatosS3_ConBloquesValidos(t *testing.T) {
 	mockS3 := &mockClienteS3{
 		listObjectsOutput: &s3.ListObjectsV2Output{
 			Contents: []s3types.Object{
-				{Key: aws.String("nodo1/data/0000000001/00000000001000_00000000004000")},
+				{Key: aws.String("nodo1/0000000001_00000000000000001000_00000000000000004000")},
 			},
 		},
 		getObjectData: bloqueComprimido,
@@ -1634,7 +1634,7 @@ func TestConsultarUltimoPunto_DesdeS3(t *testing.T) {
 	mockS3 := &mockClienteS3{
 		listObjectsOutput: &s3.ListObjectsV2Output{
 			Contents: []s3types.Object{
-				{Key: aws.String("nodo1/data/0000000001/00000000001000_00000000003000")},
+				{Key: aws.String("nodo1/0000000001_00000000000000001000_00000000000000003000")},
 			},
 		},
 		getObjectData: bloqueComprimido,

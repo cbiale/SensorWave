@@ -22,10 +22,11 @@ const (
 //	resultado.Valores[0][bucket][serie] // Primera agregación
 //	resultado.Agregaciones[0]           // Tipo de la primera agregación
 type ResultadoAgregacionTemporal struct {
-	Series       []string         // Columnas: nombres de series ordenados alfabéticamente
-	Tiempos      []int64          // Filas: inicio de cada bucket (Unix nanosegundos)
-	Agregaciones []TipoAgregacion // Lista ordenada de agregaciones calculadas
-	Valores      [][][]float64    // Matriz [agregacion][bucket][serie], math.NaN() = sin datos
+	Series             []string         // Columnas: nombres de series ordenados alfabéticamente
+	Tiempos            []int64          // Filas: inicio de cada bucket (Unix nanosegundos)
+	Agregaciones       []TipoAgregacion // Lista ordenada de agregaciones calculadas
+	Valores            [][][]float64    // Matriz [agregacion][bucket][serie], math.NaN() = sin datos
+	NodosNoDisponibles []string         // IDs de nodos que no respondieron (solo en consultas globales)
 }
 
 // ObtenerAgregacion retorna la matriz de valores para un tipo de agregación específico.

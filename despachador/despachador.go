@@ -10,8 +10,6 @@ import (
 	"math"
 	"net/http"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -346,6 +344,81 @@ func (m *ManagerDespachador) ListarNodos() []tipos.Nodo {
 	return nodosLista
 }
 
+// SerieInfo contiene información de una serie incluyendo el nodo al que pertenece
+type SerieInfo struct {
+	tipos.Serie
+	NodoID string
+}
+
+// ListarSeries retorna todas las series de todos los nodos que coinciden con el patrón.
+// Si patron es vacío o "*", retorna todas las series.
+// Soporta wildcards (ej: "sensor/*", "*/temp").
+func (m *ManagerDespachador) ListarSeries(patron string) []SerieInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if patron == "" {
+		patron = "*"
+	}
+
+	var series []SerieInfo
+	for _, nodo := range m.nodos {
+		for path, serie := range nodo.Series {
+			if tipos.MatchPath(path, patron) {
+				series = append(series, SerieInfo{
+					Serie:  serie,
+					NodoID: nodo.NodoID,
+				})
+			}
+		}
+	}
+
+	// Ordenar por path
+	sort.Slice(series, func(i, j int) bool {
+		return series[i].Path < series[j].Path
+	})
+
+	return series
+}
+
+// ObtenerSerie retorna la información de una serie específica.
+// Retorna nil si la serie no existe.
+func (m *ManagerDespachador) ObtenerSerie(path string) *SerieInfo {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, nodo := range m.nodos {
+		if serie, existe := nodo.Series[path]; existe {
+			return &SerieInfo{
+				Serie:  serie,
+				NodoID: nodo.NodoID,
+			}
+		}
+	}
+	return nil
+}
+
+// ObtenerEstadisticas retorna estadísticas generales del despachador
+type EstadisticasDespachador struct {
+	NumNodos  int
+	NumSeries int
+}
+
+func (m *ManagerDespachador) ObtenerEstadisticas() EstadisticasDespachador {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	numSeries := 0
+	for _, nodo := range m.nodos {
+		numSeries += len(nodo.Series)
+	}
+
+	return EstadisticasDespachador{
+		NumNodos:  len(m.nodos),
+		NumSeries: numSeries,
+	}
+}
+
 // monitorearNodos verifica periódicamente el estado de los nodos
 func (m *ManagerDespachador) monitorearNodos() {
 	ticker := time.NewTicker(30 * time.Second)
@@ -507,8 +580,8 @@ func (m *ManagerDespachador) descargarYDescomprimirBloque(clave string, serie ti
 func (m *ManagerDespachador) listarBloquesEnRango(nodoID string, serieID int, inicio, fin int64) ([]string, error) {
 	ctx := context.TODO()
 
-	// Prefijo para buscar bloques: <nodoID>/data/<serieID>/
-	prefijo := fmt.Sprintf("%s/data/%010d/", nodoID, serieID)
+	// Prefijo para buscar bloques: <nodoID>/<serieID>_
+	prefijo := tipos.GenerarPrefijoS3Serie(nodoID, serieID)
 
 	input := &s3.ListObjectsV2Input{
 		Bucket: aws.String(m.config.Bucket),
@@ -523,30 +596,12 @@ func (m *ManagerDespachador) listarBloquesEnRango(nodoID string, serieID int, in
 	var bloquesEnRango []string
 
 	for _, obj := range result.Contents {
-		// Extraer tiempos del nombre del bloque
-		// Formato: <nodoID>/data/<serieID>/<tiempoInicio>_<tiempoFin>
+		// Extraer tiempos del nombre del bloque usando función centralizada
+		// Formato: <nodoID>/<serieID>_<tiempoInicio>_<tiempoFin>
 		clave := *obj.Key
-		partes := strings.Split(clave, "/")
-		if len(partes) < 4 {
-			continue
-		}
-
-		nombreBloque := partes[len(partes)-1]
-		tiempos := strings.Split(nombreBloque, "_")
-		if len(tiempos) != 2 {
-			continue
-		}
-
-		bloqueInicio, err := strconv.ParseInt(strings.TrimLeft(tiempos[0], "0"), 10, 64)
+		_, bloqueInicio, bloqueFin, err := tipos.ParsearClaveS3Datos(clave)
 		if err != nil {
-			// Si el tiempo es "00000000000000000000", ParseInt fallará
-			// Intentar con el valor original
-			bloqueInicio = 0
-		}
-
-		bloqueFin, err := strconv.ParseInt(strings.TrimLeft(tiempos[1], "0"), 10, 64)
-		if err != nil {
-			continue
+			continue // Ignorar bloques con formato inválido
 		}
 
 		// Verificar si el bloque intersecta con el rango solicitado
@@ -762,6 +817,7 @@ func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, ti
 		errS3     error
 		errEdge   error
 		path      string
+		nodoID    string
 	}
 	resultados := make(chan resultadoSerie, len(seriesEncontradas))
 
@@ -783,6 +839,7 @@ func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, ti
 				errS3:     errS3,
 				errEdge:   errEdge,
 				path:      sn.path,
+				nodoID:    sn.nodo.NodoID,
 			}
 		}(sn)
 	}
@@ -790,6 +847,7 @@ func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, ti
 	// Recoger todos los resultados
 	var todosResultados []tipos.ResultadoConsultaRango
 	var erroresS3 []string
+	nodosNoDisponibles := make(map[string]struct{}) // Usar mapa para evitar duplicados
 
 	for i := 0; i < len(seriesEncontradas); i++ {
 		res := <-resultados
@@ -799,9 +857,10 @@ func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, ti
 			erroresS3 = append(erroresS3, fmt.Sprintf("%s: %v", res.path, res.errS3))
 		}
 
-		// Los errores de edge solo se loguean (el edge puede estar offline)
+		// Los errores de edge se registran como nodos no disponibles
 		if res.errEdge != nil {
 			log.Printf("Advertencia: error consultando edge para serie %s: %v", res.path, res.errEdge)
+			nodosNoDisponibles[res.nodoID] = struct{}{}
 		}
 
 		// Agregar resultado si tiene datos
@@ -816,7 +875,15 @@ func (m *ManagerDespachador) ConsultarRango(nombreSerie string, tiempoInicio, ti
 	}
 
 	// Combinar todos los resultados en formato tabular final
-	return m.combinarResultadosTabulares(todosResultados), nil
+	resultado := m.combinarResultadosTabulares(todosResultados)
+
+	// Agregar nodos no disponibles al resultado
+	for nodoID := range nodosNoDisponibles {
+		resultado.NodosNoDisponibles = append(resultado.NodosNoDisponibles, nodoID)
+	}
+	sort.Strings(resultado.NodosNoDisponibles)
+
+	return resultado, nil
 }
 
 // ConsultarUltimoPunto busca el último punto de cada serie combinando S3 y edge.
@@ -846,10 +913,12 @@ func (m *ManagerDespachador) ConsultarUltimoPunto(nombreSerie string, tiempoInic
 
 	// Canal para recoger resultados de todas las consultas
 	type resultadoSerie struct {
-		path   string
-		tiempo int64
-		valor  interface{}
-		ok     bool
+		path      string
+		tiempo    int64
+		valor     interface{}
+		ok        bool
+		nodoID    string
+		edgeError bool // Indica si hubo error al consultar el edge
 	}
 	resultados := make(chan resultadoSerie, len(seriesEncontradas))
 
@@ -859,10 +928,14 @@ func (m *ManagerDespachador) ConsultarUltimoPunto(nombreSerie string, tiempoInic
 			var tiempo int64
 			var valor interface{}
 			encontrado := false
+			edgeError := false
 
 			// Primero intentar con el edge (tiene datos más recientes)
 			resEdge, err := m.consultarPuntoEdge(sn.nodo, sn.path, tiempoInicio, tiempoFin, 5*time.Second)
-			if err == nil && len(resEdge.Series) > 0 {
+			if err != nil {
+				edgeError = true
+				log.Printf("Advertencia: error consultando edge para serie %s: %v", sn.path, err)
+			} else if len(resEdge.Series) > 0 {
 				// El edge retorna formato columnar, buscar nuestra serie
 				for i, s := range resEdge.Series {
 					if s == sn.path {
@@ -902,10 +975,12 @@ func (m *ManagerDespachador) ConsultarUltimoPunto(nombreSerie string, tiempoInic
 			}
 
 			resultados <- resultadoSerie{
-				path:   sn.path,
-				tiempo: tiempo,
-				valor:  valor,
-				ok:     encontrado,
+				path:      sn.path,
+				tiempo:    tiempo,
+				valor:     valor,
+				ok:        encontrado,
+				nodoID:    sn.nodo.NodoID,
+				edgeError: edgeError,
 			}
 		}(sn)
 	}
@@ -917,9 +992,13 @@ func (m *ManagerDespachador) ConsultarUltimoPunto(nombreSerie string, tiempoInic
 		valor  interface{}
 	}
 	var puntos []puntoSerie
+	nodosNoDisponibles := make(map[string]struct{})
 
 	for i := 0; i < len(seriesEncontradas); i++ {
 		res := <-resultados
+		if res.edgeError {
+			nodosNoDisponibles[res.nodoID] = struct{}{}
+		}
 		if res.ok {
 			puntos = append(puntos, puntoSerie{
 				path:   res.path,
@@ -950,6 +1029,12 @@ func (m *ManagerDespachador) ConsultarUltimoPunto(nombreSerie string, tiempoInic
 		resultado.Tiempos[i] = p.tiempo
 		resultado.Valores[i] = p.valor
 	}
+
+	// Agregar nodos no disponibles al resultado
+	for nodoID := range nodosNoDisponibles {
+		resultado.NodosNoDisponibles = append(resultado.NodosNoDisponibles, nodoID)
+	}
+	sort.Strings(resultado.NodosNoDisponibles)
 
 	return resultado, nil
 }
@@ -1123,9 +1208,10 @@ func (m *ManagerDespachador) ConsultarAgregacion(
 	}
 
 	return tipos.ResultadoAgregacion{
-		Series:       resultado.Series, // Ya ordenadas alfabéticamente por ConsultarRango
-		Agregaciones: agregaciones,
-		Valores:      valores, // [agregacion][serie]
+		Series:             resultado.Series, // Ya ordenadas alfabéticamente por ConsultarRango
+		Agregaciones:       agregaciones,
+		Valores:            valores, // [agregacion][serie]
+		NodosNoDisponibles: resultado.NodosNoDisponibles,
 	}, nil
 }
 
@@ -1224,10 +1310,11 @@ func (m *ManagerDespachador) ConsultarAgregacionTemporal(
 	}
 
 	return tipos.ResultadoAgregacionTemporal{
-		Series:       resultado.Series, // Ya ordenadas alfabéticamente por ConsultarRango
-		Tiempos:      buckets,
-		Agregaciones: agregaciones,
-		Valores:      valores, // [agregacion][bucket][serie]
+		Series:             resultado.Series, // Ya ordenadas alfabéticamente por ConsultarRango
+		Tiempos:            buckets,
+		Agregaciones:       agregaciones,
+		Valores:            valores, // [agregacion][bucket][serie]
+		NodosNoDisponibles: resultado.NodosNoDisponibles,
 	}, nil
 }
 
